@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Simulated Pulse Throb Monitor</title>
+<title>Simulated Pulse Throb Monitor (Fixed Marker Positions)</title>
 <style>
   body { font-family: Arial, sans-serif; text-align: center; margin: 20px; }
   canvas { border: 1px solid #ccc; margin-top: 20px; }
@@ -45,20 +45,22 @@
   const width = canvas.width;
   const height = canvas.height;
 
-  // Simulated heart rate bpm, can vary slowly over time
   let heartRate = 60; // bpm
   let lastHrUpdate = 0;
 
-  // Recording data: each recording has { name, startTime, duration, throbs: [timestamps(ms)] }
+  // Recordings array and current recording object
   let recordings = [];
   let currentRecording = null;
 
-  // For waveform: store points for last few seconds (8s)
+  // Duration for visible window in seconds & sample rate
   const durationSeconds = 8;
   const sampleRate = 60; // points per second
-  const maxPoints = durationSeconds * sampleRate;
+
+  // waveformData will hold pulse wave y-values for the last durationSeconds
+  // We'll store time (relative to recording start) with each point for accuracy
   let waveformData = [];
 
+  // Format ms to MM:SS
   function formatTime(ms) {
     const totalSeconds = Math.floor(ms / 1000);
     const mins = Math.floor(totalSeconds / 60).toString().padStart(2,'0');
@@ -66,7 +68,7 @@
     return `${mins}:${secs}`;
   }
 
-  // Update heart rate slowly with random small variation every 5s
+  // Update heart rate every ~5 seconds with a small random variation
   function updateHeartRate(timestamp) {
     if (!lastHrUpdate || timestamp - lastHrUpdate > 5000) {
       lastHrUpdate = timestamp;
@@ -75,11 +77,9 @@
     }
   }
 
-  // Get sine wave value at time t (seconds)
+  // Pulse wave sine function at time t (seconds)
   function pulseWave(t) {
-    // frequency = heartRate / 60 Hz
     const freq = heartRate / 60;
-    // amplitude modulated slightly for realism
     const amplitude = 50 + 10 * Math.sin(2 * Math.PI * 0.1 * t);
     return height/2 - amplitude * Math.sin(2 * Math.PI * freq * t);
   }
@@ -91,32 +91,43 @@
     ctx.strokeStyle = '#0077cc';
     ctx.beginPath();
 
-    // Draw waveform
-    for(let i=0; i<waveformData.length; i++) {
-      const x = (i / maxPoints) * width;
-      const y = waveformData[i];
-      if(i===0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
+    // Draw waveform points
+    waveformData.forEach((point, i) => {
+      const x = (i / (durationSeconds * sampleRate)) * width;
+      if(i === 0) ctx.moveTo(x, point.y);
+      else ctx.lineTo(x, point.y);
+    });
     ctx.stroke();
 
-    // Draw throb markers (red vertical lines)
+    // Draw throb markers pinned at exact position on timeline inside visible window
     if(currentRecording) {
       const now = performance.now();
-      const elapsed = (paused ? pauseTime - startTime - elapsedPaused : now - startTime - elapsedPaused) / 1000; // seconds elapsed in recording
+      const elapsed = (paused ? pauseTime - startTime - elapsedPaused : now - startTime - elapsedPaused) / 1000;
+
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 1.5;
       currentRecording.throbs.forEach(throbTime => {
-        // Position of throb relative to waveformData timeline:
-        // throbTime is ms elapsed since recording start
+        // throbTime in ms relative to recording start -> seconds
         const throbSec = throbTime / 1000;
-        // Only draw if in last durationSeconds window
-        if (throbSec > elapsed - durationSeconds && throbSec <= elapsed) {
-          const posIndex = Math.floor(maxPoints * (throbSec - (elapsed - durationSeconds)) / durationSeconds);
-          const x = (posIndex / maxPoints) * width;
-          ctx.strokeStyle = 'red';
+
+        // Check if throb is in the visible window
+        if (throbSec >= elapsed - durationSeconds && throbSec <= elapsed) {
+          // Calculate X coordinate relative to visible window
+          // Left edge = elapsed - durationSeconds, right edge = elapsed
+          const x = ((throbSec - (elapsed - durationSeconds)) / durationSeconds) * width;
           ctx.beginPath();
           ctx.moveTo(x, 0);
           ctx.lineTo(x, height);
           ctx.stroke();
+
+          // Optional: draw a small circle on waveform line at marker for clarity
+          // Find waveform y at closest waveformData point
+          const index = Math.floor((throbSec - (elapsed - durationSeconds)) * sampleRate);
+          const y = waveformData[index]?.y ?? height/2;
+          ctx.fillStyle = 'red';
+          ctx.beginPath();
+          ctx.arc(x, y, 5, 0, 2*Math.PI);
+          ctx.fill();
         }
       });
     }
@@ -129,20 +140,22 @@
     }
 
     const now = performance.now();
-
-    // Update heart rate every 5 seconds
     updateHeartRate(now);
 
-    const elapsed = (now - startTime - elapsedPaused) / 1000; // seconds since recording started
+    const elapsed = (now - startTime - elapsedPaused) / 1000;
 
-    // Push new waveform point
-    const y = pulseWave(elapsed);
-    waveformData.push(y);
-    if (waveformData.length > maxPoints) waveformData.shift();
+    // Append new waveform point with absolute time
+    waveformData.push({ 
+      t: elapsed, 
+      y: pulseWave(elapsed)
+    });
+
+    // Keep only last durationSeconds of data points
+    if (waveformData.length > durationSeconds * sampleRate) waveformData.shift();
 
     drawWaveform();
 
-    // Update timer display
+    // Update timer
     timerSpan.textContent = formatTime(now - startTime - elapsedPaused);
 
     animationFrameId = requestAnimationFrame(update);
@@ -154,9 +167,9 @@
     startTime = performance.now();
     elapsedPaused = 0;
     waveformData = [];
-    currentRecording = { 
-      name: `Recording ${recordings.length + 1}`, 
-      startTime: startTime,
+    currentRecording = {
+      name: `Recording ${recordings.length + 1}`,
+      startTime,
       duration: 0,
       throbs: []
     };
@@ -183,7 +196,6 @@
     pauseResumeBtn.textContent = 'Pause';
 
     timerSpan.textContent = '00:00';
-
     waveformData = [];
     drawWaveform();
 
@@ -234,12 +246,11 @@
   }
 
   function downloadRecordingCSV(rec) {
-    // CSV columns: Time(ms), WaveformY, Throb(0/1)
+    // CSV: Time(ms), WaveformY, Throb(0/1)
     let csv = 'Time(ms),WaveformY,Throb\n';
 
-    // Construct waveform points for full recording duration at sampleRate
-    // We'll simulate waveform values for entire duration
     const pointsCount = Math.floor((rec.duration / 1000) * sampleRate);
+
     for(let i=0; i<pointsCount; i++) {
       const timeMs = i * (1000 / sampleRate);
       const t = timeMs / 1000;
