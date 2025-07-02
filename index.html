@@ -2,20 +2,23 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Pulse Throb Monitor</title>
+<title>Pulse Throb Monitor with CSV Export</title>
 <style>
   body { font-family: Arial, sans-serif; margin: 20px; }
   canvas { border: 1px solid #ccc; display: block; margin-bottom: 10px; }
   button, input[type="text"] { margin: 5px; }
   .stats { margin-top: 10px; font-size: 14px; }
-  .recordings-list { margin-top: 20px; border-top: 1px solid #999; padding-top: 10px; }
-  .recording-item { margin-bottom: 8px; }
+  .recordings-list { margin-top: 20px; border-top: 1px solid #999; padding-top: 10px; max-width: 600px;}
+  .recording-item { margin-bottom: 8px; background: #f9f9f9; padding: 6px; border-radius: 4px; display: flex; align-items: center; }
   .recording-item input.name-input {
-    width: 180px;
+    flex-grow: 1;
     padding: 3px;
+    margin-right: 10px;
+    font-size: 14px;
   }
   .recording-item button {
-    margin-left: 8px;
+    margin-left: 6px;
+    font-size: 13px;
   }
   #extraStats {
     margin-top: 12px;
@@ -36,14 +39,15 @@
   <button id="resumeBtn" disabled>Resume</button>
   <button id="stopBtn" disabled>Stop</button>
   <button id="throbBtn" disabled>Mark Throb</button>
-  <button id="toggleAllBtn">Hide All Stats, Markings & Waveform</button>
+  <button id="toggleAllBtn">Hide Waveform</button>
+  <button id="downloadCSVBtn" disabled>Download CSV</button>
 </div>
 
 <div>Timer: <span id="timer">00:00</span></div>
 
 <div class="stats" id="metricsDisplay"></div>
 
-<!-- New div for mean pulse rate and delta time -->
+<!-- Overall mean pulse rate and peaks info -->
 <div id="extraStats"></div>
 
 <div class="recordings-list" id="recordingsList">
@@ -63,6 +67,7 @@
   const stopBtn = document.getElementById("stopBtn");
   const throbBtn = document.getElementById("throbBtn");
   const toggleAllBtn = document.getElementById("toggleAllBtn");
+  const downloadCSVBtn = document.getElementById("downloadCSVBtn");
 
   const timerDisplay = document.getElementById("timer");
   const metricsDisplay = document.getElementById("metricsDisplay");
@@ -80,49 +85,37 @@
   let lastSampleTime = 0;
   let allVisible = true;
 
+  // Random pulse rate between 60-100 bpm -> Hz = bpm/60
+  let pulseBpm = 60;
+  let baseFreq = pulseBpm / 60;
+
   const savedRecordings = [];
   let selectedRecordingIndex = null;
 
-  const DISPLAY_DURATION = 20000; // 20s
+  const DISPLAY_DURATION = 20000; // 20 seconds for drawing waveform
   const SAMPLE_INTERVAL = 20; // ms
 
-  // Baseline and amplitude used for vertical positioning
   const BASELINE = 120;
   const AMPLITUDE = 70;
 
-  // --- New: simulate more realistic arterial waveform ---
-  // Function to simulate one arterial pulse shape with systolic peak and dicrotic notch
-  // t goes from 0 to 1 representing one pulse cycle (normalized)
+  // --- Arterial waveform with two peaks per cycle ---
+  // Normalized t [0,1) for pulse phase
   function arterialWaveform(t) {
-    // Systolic peak at ~0.2
-    // Dicrotic notch around 0.45
-    // Decay until next pulse (1.0)
-
-    if (t < 0) return BASELINE;
-    t = t % 1; // cycle
-
-    if (t < 0.2) {
-      // Rapid rise to systolic peak
-      return BASELINE + AMPLITUDE * (5 * t);
-    } else if (t < 0.3) {
-      // Slight drop after peak
-      return BASELINE + AMPLITUDE * (1 - 3 * (t - 0.2));
-    } else if (t < 0.45) {
-      // Dicrotic notch dip
-      return BASELINE + AMPLITUDE * (0.7 - 4 * (t - 0.3));
+    t = t % 1;
+    if (t < 0.15) {
+      return BASELINE + AMPLITUDE * (t / 0.15);
+    } else if (t < 0.25) {
+      return BASELINE + AMPLITUDE * (1 - (t - 0.15) / 0.1 * 0.8);
+    } else if (t < 0.4) {
+      return BASELINE + AMPLITUDE * (0.2 + 0.5 * Math.sin(((t - 0.25) / 0.15) * Math.PI));
     } else if (t < 0.7) {
-      // Slow return to baseline
-      return BASELINE + AMPLITUDE * (0.3 + 2 * (t - 0.45));
+      return BASELINE + AMPLITUDE * (0.2 * (1 - (t - 0.4) / 0.3));
     } else {
-      // Diastolic plateau near baseline
       return BASELINE;
     }
   }
 
-  // Base pulse frequency ~ 1.2Hz (72 bpm)
-  const BASE_FREQ = 1.2;
-
-  // === Utilities ===
+  // --- Helpers ---
   function formatTimer(ms) {
     const totalSeconds = Math.floor(ms / 1000);
     const m = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
@@ -130,30 +123,202 @@
     return `${m}:${s}`;
   }
 
-  function normalizeAngle(angle) {
-    let a = angle % (2 * Math.PI);
-    if (a < 0) a += 2 * Math.PI;
-    return a;
-  }
+  // Interpolate pulseWave value at given time (linear interpolation)
+  function interpolatePulseValueIn(wave, time) {
+    if (!wave.length) return null;
+    // Binary search for closest two points
+    let left = 0, right = wave.length - 1;
+    if (time < wave[0].time) return null;
+    if (time > wave[right].time) return null;
 
-  // === Data simulation ===
-  function simulatePulse() {
-    const now = performance.now();
-    if (now - lastSampleTime >= SAMPLE_INTERVAL) {
-      const t = now / 1000;
-      const cycleTime = (BASE_FREQ * t) % 1;
-      const noise = (Math.random() - 0.5) * 4; // less noise for clarity
-      const value = arterialWaveform(cycleTime) + noise;
-      pulseWave.push({ time: now, value });
-      lastSampleTime = now;
+    while (left < right - 1) {
+      const mid = Math.floor((left + right) / 2);
+      if (wave[mid].time > time) right = mid;
+      else left = mid;
     }
-
-    // Keep only last 5 minutes of data for memory safety
-    const cutoff = performance.now() - 5 * 60 * 1000;
-    pulseWave = pulseWave.filter(p => p.time >= cutoff);
+    // Linear interp between left and right
+    const p1 = wave[left];
+    const p2 = wave[right];
+    const dt = p2.time - p1.time;
+    if (dt === 0) return p1.value;
+    const frac = (time - p1.time) / dt;
+    return p1.value + frac * (p2.value - p1.value);
   }
 
-  // === Drawing ===
+  // Find peaks (maxima) in the waveform using a window method (peak must be max in +- 50ms)
+  function findPeaksIn(wave) {
+    const peaks = [];
+    const windowMs = 50;
+    for (let i = 1; i < wave.length - 1; i++) {
+      const p = wave[i];
+      if (p.value > wave[i-1].value && p.value > wave[i+1].value) {
+        // Check no higher point in window around p
+        const tLow = p.time - windowMs;
+        const tHigh = p.time + windowMs;
+        let isPeak = true;
+        for (let j = 0; j < wave.length; j++) {
+          if (wave[j].time >= tLow && wave[j].time <= tHigh && wave[j].value > p.value) {
+            isPeak = false;
+            break;
+          }
+        }
+        if (isPeak) peaks.push(p.time);
+      }
+    }
+    return peaks;
+  }
+
+  // Calculate phase of each pulse peak in radians
+  // Using detected peaks, phase = (peak_time % pulse_period) / pulse_period * 2pi
+  function getPhasesFromPeaks(peaks, pulsePeriod) {
+    return peaks.map(t => ((t % pulsePeriod) / pulsePeriod) * 2 * Math.PI);
+  }
+
+  // Calculate Mean Vector Length (PLV)
+  function meanVectorLength(phases) {
+    if (!phases.length) return 0;
+    let x = 0, y = 0;
+    for (const p of phases) {
+      x += Math.cos(p);
+      y += Math.sin(p);
+    }
+    x /= phases.length;
+    y /= phases.length;
+    return Math.sqrt(x*x + y*y);
+  }
+
+  // Calculate Rayleigh Test p-value for uniformity
+  function rayleighP(phases) {
+    if (!phases.length) return 1;
+    const n = phases.length;
+    const R = meanVectorLength(phases);
+    const z = n * R * R;
+    // Approximate p-value
+    return Math.exp(-z) * (1 + (2*z - z*z)/(4*n) - (24*z - 132*z*z + 76*z*z*z - 9*z*z*z*z)/(288*n*n));
+  }
+
+  // Calculate synchrony metrics for throbs relative to peaks
+  // throbs are timestamps; peaks are timestamps of main peaks (first peaks)
+  // For each throb, find closest peak before throb, compute phase difference
+  // Return deltaThrobs array, mean vector length (PLV), Rayleigh p
+  function calculateSynchrony(throbs, peaks, pulsePeriod) {
+    if (throbs.length === 0 || peaks.length === 0) {
+      return { deltaThrobs: [], plv: 0, rayleighPval: 1 };
+    }
+    // For each throb, find preceding peak
+    const deltaThrobs = [];
+    const phases = [];
+
+    throbs.forEach(throbTime => {
+      // Find last peak before throbTime
+      let peakBefore = null;
+      for (let i = peaks.length - 1; i >= 0; i--) {
+        if (peaks[i] <= throbTime) {
+          peakBefore = peaks[i];
+          break;
+        }
+      }
+      if (peakBefore === null) {
+        // No preceding peak (throb before recording start), skip
+        return;
+      }
+      // Delta time from peak in seconds
+      const dt = (throbTime - peakBefore) / 1000;
+      // Normalize to phase: delta phase = (dt / pulsePeriod) * 2pi
+      const deltaPhase = (dt / pulsePeriod) * 2 * Math.PI;
+      // Map deltaPhase into [-pi, pi]
+      let dp = deltaPhase;
+      while (dp > Math.PI) dp -= 2 * Math.PI;
+      while (dp < -Math.PI) dp += 2 * Math.PI;
+      deltaThrobs.push(dp);
+      phases.push(dp);
+    });
+
+    const plv = meanVectorLength(phases);
+    const pval = rayleighP(phases);
+    return { deltaThrobs, plv, rayleighPval: pval };
+  }
+
+  // === Recording management ===
+  function addRecording(name, pulseWaveData, throbsData, pulseBpmVal, statsObj) {
+    savedRecordings.push({
+      name,
+      pulseWave: pulseWaveData.slice(),
+      throbs: throbsData.slice(),
+      pulseBpm: pulseBpmVal,
+      stats: statsObj
+    });
+    renderRecordingsList();
+  }
+
+  function renderRecordingsList() {
+    if (!savedRecordings.length) {
+      recordingsContainer.textContent = "No recordings saved yet.";
+      return;
+    }
+    recordingsContainer.innerHTML = "";
+    savedRecordings.forEach((rec, i) => {
+      const div = document.createElement("div");
+      div.className = "recording-item";
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.value = rec.name || `Recording ${i+1}`;
+      nameInput.className = "name-input";
+      nameInput.addEventListener("change", () => {
+        rec.name = nameInput.value;
+      });
+
+      const loadBtn = document.createElement("button");
+      loadBtn.textContent = "Load";
+      loadBtn.addEventListener("click", () => {
+        selectedRecordingIndex = i;
+        updateUIForLoadedRecording();
+      });
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", () => {
+        if (selectedRecordingIndex === i) selectedRecordingIndex = null;
+        savedRecordings.splice(i, 1);
+        renderRecordingsList();
+        clearCanvasAndUI();
+      });
+
+      const downloadBtn = document.createElement("button");
+      downloadBtn.textContent = "Download CSV";
+      downloadBtn.addEventListener("click", () => {
+        downloadCSVForRecording(i);
+      });
+
+      div.appendChild(nameInput);
+      div.appendChild(loadBtn);
+      div.appendChild(deleteBtn);
+      div.appendChild(downloadBtn);
+      recordingsContainer.appendChild(div);
+    });
+  }
+
+  function updateUIForLoadedRecording() {
+    if (selectedRecordingIndex === null) {
+      extraStatsDisplay.textContent = "";
+      metricsDisplay.textContent = "";
+      downloadCSVBtn.disabled = true;
+      return;
+    }
+    const rec = savedRecordings[selectedRecordingIndex];
+    extraStatsDisplay.textContent = `Mean Pulse Rate: ${rec.pulseBpm.toFixed(1)} bpm | Number of Peaks: ${rec.stats.numPeaks}`;
+    metricsDisplay.textContent = `PLV: ${rec.stats.plv.toFixed(3)} | Rayleigh p: ${rec.stats.rayleighPval.toExponential(2)}`;
+    downloadCSVBtn.disabled = false;
+  }
+
+  function clearCanvasAndUI() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    extraStatsDisplay.textContent = "";
+    metricsDisplay.textContent = "";
+  }
+
+  // === Draw waveform and throbs ===
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!allVisible) return;
@@ -168,15 +333,15 @@
       waveToDraw = pulseWave;
       throbsToDraw = throbs;
     }
-
     if (!waveToDraw.length) return;
 
     const now = selectedRecordingIndex !== null
       ? waveToDraw[waveToDraw.length - 1].time
       : performance.now();
+
     const start = now - DISPLAY_DURATION;
 
-    // Draw waveform in blue
+    // Draw waveform line
     ctx.beginPath();
     waveToDraw.forEach((p, i) => {
       if (p.time < start) return;
@@ -189,7 +354,7 @@
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Draw throbs as red circles
+    // Draw throbs
     throbsToDraw.forEach(throb => {
       if (throb.time < start || throb.time > now) return;
       const val = interpolatePulseValueIn(waveToDraw, throb.time);
@@ -202,13 +367,22 @@
       ctx.fill();
     });
 
-    // Draw peaks in green
+    // Draw first peaks in green (only first peak of each pulse cycle)
+    // We find peaks, then filter those corresponding to first peak in cycle (~0 to 0.15 pulse phase)
     const peaks = findPeaksIn(waveToDraw);
-    peaks.forEach(peakTime => {
-      if (peakTime < start || peakTime > now) return;
-      const val = interpolatePulseValueIn(waveToDraw, peakTime);
+    const pulsePeriod = 60000 / pulseBpm; // ms period
+
+    // We calculate phase of each peak and only keep those where phase < 0.15 normalized
+    const filteredPeaks = peaks.filter(t => {
+      const phase = ((t % pulsePeriod) / pulsePeriod);
+      return phase < 0.15;
+    });
+
+    filteredPeaks.forEach(pt => {
+      if (pt < start || pt > now) return;
+      const val = interpolatePulseValueIn(waveToDraw, pt);
       if (val === null) return;
-      const x = ((peakTime - start) / DISPLAY_DURATION) * canvas.width;
+      const x = ((pt - start) / DISPLAY_DURATION) * canvas.width;
       const y = canvas.height - val;
       ctx.beginPath();
       ctx.arc(x, y, 4, 0, 2 * Math.PI);
@@ -217,270 +391,267 @@
     });
   }
 
-  // Helper to interpolate pulse value at any time from data
-  function interpolatePulseValueIn(data, time) {
-    if (!data.length) return null;
-    for (let i = 0; i < data.length - 1; i++) {
-      if (data[i].time <= time && time <= data[i + 1].time) {
-        const t1 = data[i].time, t2 = data[i + 1].time;
-        const v1 = data[i].value, v2 = data[i + 1].value;
-        const ratio = (time - t1) / (t2 - t1);
-        return v1 + ratio * (v2 - v1);
-      }
-    }
-    return null;
-  }
-
-  // Find peaks by local maxima with a minimum prominence
-  // Returns array of times
-  function findPeaksIn(data) {
-    const peaks = [];
-    for (let i = 1; i < data.length - 1; i++) {
-      if (data[i].value > data[i - 1].value && data[i].value > data[i + 1].value) {
-        // Additional: only take peaks > baseline + amplitude/3
-        if (data[i].value > BASELINE + AMPLITUDE / 3) {
-          peaks.push(data[i].time);
-        }
-      }
-    }
-    return peaks;
-  }
-
-  // === Timer display ===
-  function updateTimer() {
+  // === Simulation ===
+  function simulatePulse() {
     if (!isRecording || isPaused) return;
-    const elapsed = performance.now() - recordingStartTime;
+    const now = performance.now();
+    if (now - lastSampleTime >= SAMPLE_INTERVAL) {
+      const t = (now - recordingStartTime) / 1000;
+      const cycleTime = (baseFreq * t) % 1;
+      const noise = (Math.random() - 0.5) * 3;
+      const value = arterialWaveform(cycleTime) + noise;
+      pulseWave.push({ time: now, value });
+      lastSampleTime = now;
+    }
+    // Limit stored data to 5 minutes
+    const cutoff = performance.now() - 5 * 60 * 1000;
+    pulseWave = pulseWave.filter(p => p.time >= cutoff);
+  }
+
+  // === Timer display update ===
+  function updateTimer() {
+    if (!recordingStartTime) {
+      timerDisplay.textContent = "00:00";
+      return;
+    }
+    const elapsed = isPaused ? pauseStartTime - recordingStartTime : performance.now() - recordingStartTime;
     timerDisplay.textContent = formatTimer(elapsed);
   }
 
-  // === Metrics display ===
-  function updateMetrics() {
-    let waveToUse, throbsToUse;
-
-    if (selectedRecordingIndex !== null) {
-      const rec = savedRecordings[selectedRecordingIndex];
-      waveToUse = rec.pulseWave;
-      throbsToUse = rec.throbs;
-    } else {
-      waveToUse = pulseWave;
-      throbsToUse = throbs;
-    }
-
-    // Show number of data points and throbs
-    metricsDisplay.textContent =
-      `Data Points: ${waveToUse.length} | Marked Throbs: ${throbsToUse.length}`;
-
-    // Calculate mean pulse rate from peak detection in last 20s
+  // === Throb button action ===
+  function markThrob() {
+    if (!isRecording) return;
     const now = performance.now();
-    const start = now - DISPLAY_DURATION;
-    const peaks = findPeaksIn(waveToUse.filter(p => p.time >= start));
-
-    let meanPulseRate = "N/A";
-    if (peaks.length > 1) {
-      // Calculate average interval in seconds
-      let intervals = [];
-      for (let i = 1; i < peaks.length; i++) {
-        intervals.push((peaks[i] - peaks[i - 1]) / 1000);
-      }
-      const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-      meanPulseRate = (60 / avgInterval).toFixed(1) + " bpm";
-    }
-
-    // Calculate delta time since last throb (if any)
-    let deltaSinceLastThrob = "N/A";
-    if (throbsToUse.length > 0) {
-      const lastThrob = throbsToUse[throbsToUse.length - 1].time;
-      deltaSinceLastThrob = ((now - lastThrob) / 1000).toFixed(2) + " s";
-    }
-
-    extraStatsDisplay.innerHTML = `
-      Mean Pulse Rate (last 20s): <span style="color:green">${meanPulseRate}</span><br/>
-      Time Since Last Throb: <span style="color:red">${deltaSinceLastThrob}</span>
-    `;
+    throbs.push({ time: now });
+    updateStatsDisplay();
   }
 
-  // === Recording management ===
-  function saveRecording(name) {
-    if (!name.trim()) {
-      alert("Please enter a recording name.");
-      return false;
-    }
-    // Save current pulseWave and throbs copy
-    savedRecordings.push({
-      name,
-      pulseWave: pulseWave.slice(),
-      throbs: throbs.slice(),
-    });
-    renderRecordingsList();
-    return true;
-  }
-
-  function deleteRecording(index) {
-    savedRecordings.splice(index, 1);
-    if (selectedRecordingIndex === index) selectedRecordingIndex = null;
-    renderRecordingsList();
-  }
-
-  function renameRecording(index, newName) {
-    if (!newName.trim()) {
-      alert("Recording name cannot be empty.");
-      return false;
-    }
-    savedRecordings[index].name = newName;
-    renderRecordingsList();
-    return true;
-  }
-
-  function selectRecording(index) {
-    if (index === selectedRecordingIndex) {
-      selectedRecordingIndex = null;
-    } else {
-      selectedRecordingIndex = index;
-    }
-  }
-
-  function renderRecordingsList() {
-    if (savedRecordings.length === 0) {
-      recordingsContainer.textContent = "No recordings saved yet.";
+  // === Calculate stats and update display ===
+  function updateStatsDisplay() {
+    if (!pulseWave.length) {
+      metricsDisplay.textContent = "";
       extraStatsDisplay.textContent = "";
       return;
     }
-    recordingsContainer.innerHTML = "";
-    savedRecordings.forEach((rec, i) => {
-      const div = document.createElement("div");
-      div.className = "recording-item";
-      const selected = (i === selectedRecordingIndex);
-      div.style.background = selected ? "#e0f7fa" : "transparent";
+    // Calculate peaks on current pulseWave
+    const peaksAll = findPeaksIn(pulseWave);
+    const pulsePeriod = 60000 / pulseBpm; // ms
 
-      // Name input
-      const nameInput = document.createElement("input");
-      nameInput.type = "text";
-      nameInput.value = rec.name;
-      nameInput.className = "name-input";
-      nameInput.title = "Click to edit name, press Enter to save";
-      nameInput.addEventListener("keydown", e => {
-        if (e.key === "Enter") {
-          if (renameRecording(i, nameInput.value)) {
-            nameInput.blur();
-          }
-        }
-      });
-      nameInput.addEventListener("click", e => e.stopPropagation());
-
-      // Select on click of div
-      div.addEventListener("click", () => {
-        selectRecording(i);
-        renderRecordingsList();
-        updateMetrics();
-        updateTimer();
-      });
-
-      // Delete button
-      const delBtn = document.createElement("button");
-      delBtn.textContent = "Delete";
-      delBtn.addEventListener("click", e => {
-        e.stopPropagation();
-        if (confirm(`Delete recording "${rec.name}"?`)) {
-          deleteRecording(i);
-          updateMetrics();
-          updateTimer();
-        }
-      });
-
-      div.appendChild(nameInput);
-      div.appendChild(delBtn);
-      recordingsContainer.appendChild(div);
+    // Filter first peaks per pulse cycle (phase < 0.15)
+    const firstPeaks = peaksAll.filter(t => {
+      const phase = ((t % pulsePeriod) / pulsePeriod);
+      return phase < 0.15;
     });
+
+    // Calculate phases of first peaks (not necessarily used here but for clarity)
+    const peakPhases = getPhasesFromPeaks(firstPeaks, pulsePeriod);
+
+    // Calculate synchrony with throbs
+    const synchrony = calculateSynchrony(throbs.map(t => t.time), firstPeaks, pulsePeriod);
+
+    // Show PLV, Rayleigh p-value, number of peaks, pulse BPM
+    metricsDisplay.textContent = `PLV: ${synchrony.plv.toFixed(3)} | Rayleigh p: ${synchrony.rayleighPval.toExponential(2)} | Number of Peaks: ${firstPeaks.length}`;
+
+    extraStatsDisplay.textContent = `Mean Pulse Rate: ${pulseBpm.toFixed(1)} bpm`;
+
+    // Enable CSV download if throbs present
+    downloadCSVBtn.disabled = throbs.length === 0;
   }
 
-  // === Control Handlers ===
+  // === Export CSV ===
+  function downloadCSVForRecording(index = null) {
+    let pwave, throbsData, pulseRateVal, stats;
+    if (index !== null) {
+      const rec = savedRecordings[index];
+      pwave = rec.pulseWave;
+      throbsData = rec.throbs;
+      pulseRateVal = rec.pulseBpm;
+      stats = rec.stats;
+    } else {
+      pwave = pulseWave;
+      throbsData = throbs;
+      pulseRateVal = pulseBpm;
+      // Compute stats on current data
+      const peaksAll = findPeaksIn(pwave);
+      const pulsePeriod = 60000 / pulseRateVal;
+      const firstPeaks = peaksAll.filter(t => ((t % pulsePeriod) / pulsePeriod) < 0.15);
+      const synchrony = calculateSynchrony(throbsData.map(t => t.time), firstPeaks, pulsePeriod);
+      stats = {
+        plv: synchrony.plv,
+        rayleighPval: synchrony.rayleighPval,
+        numPeaks: firstPeaks.length
+      };
+    }
 
-  startBtn.addEventListener("click", () => {
+    const pulsePeriod = 60000 / pulseRateVal;
+    // Calculate first peaks again for CSV
+    const peaksAll = findPeaksIn(pwave);
+    const firstPeaks = peaksAll.filter(t => ((t % pulsePeriod) / pulsePeriod) < 0.15);
+
+    // Calculate delta throb for each throb for CSV
+    const deltaThrobsForCSV = [];
+    throbsData.forEach(throb => {
+      // Find preceding peak
+      let peakBefore = null;
+      for (let i = firstPeaks.length - 1; i >= 0; i--) {
+        if (firstPeaks[i] <= throb.time) {
+          peakBefore = firstPeaks[i];
+          break;
+        }
+      }
+      if (peakBefore === null) {
+        deltaThrobsForCSV.push("");
+        return;
+      }
+      // delta time in seconds
+      const dt = (throb.time - peakBefore) / 1000;
+      // delta phase in radians (-pi to pi)
+      let dp = (dt / pulsePeriod) * 2 * Math.PI;
+      while (dp > Math.PI) dp -= 2 * Math.PI;
+      while (dp < -Math.PI) dp += 2 * Math.PI;
+      deltaThrobsForCSV.push(dp.toFixed(4));
+    });
+
+    // Build CSV content
+    let csvContent = "time(ms),value\n";
+    pwave.forEach(p => {
+      csvContent += `${Math.round(p.time)},${p.value.toFixed(2)}\n`;
+    });
+
+    csvContent += "\nThrobs (time ms),Delta Throb (radians)\n";
+    throbsData.forEach((t, i) => {
+      csvContent += `${Math.round(t.time)},${deltaThrobsForCSV[i]}\n`;
+    });
+
+    csvContent += `\nMean Pulse Rate (bpm),${pulseRateVal.toFixed(2)}\n`;
+    csvContent += `Number of Peaks,${stats.numPeaks}\n`;
+    csvContent += `PLV,${stats.plv.toFixed(4)}\n`;
+    csvContent += `Rayleigh p-value,${stats.rayleighPval.toExponential(6)}\n`;
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (index !== null ? savedRecordings[index].name : "recording") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // === Button handlers ===
+  let pauseStartTime = null;
+
+  startBtn.onclick = () => {
     if (isRecording) return;
+    // Reset data
     pulseWave = [];
     throbs = [];
     recordingStartTime = performance.now();
+    lastSampleTime = recordingStartTime;
     isRecording = true;
     isPaused = false;
-    timerDisplay.textContent = "00:00";
+
+    // Random pulse bpm between 60 and 100
+    pulseBpm = 60 + Math.random() * 40;
+    baseFreq = pulseBpm / 60;
+
+    // Enable/disable buttons
     startBtn.disabled = true;
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
     stopBtn.disabled = false;
     throbBtn.disabled = false;
-    selectedRecordingIndex = null;
-  });
+    downloadCSVBtn.disabled = true;
 
-  pauseBtn.addEventListener("click", () => {
+    timerInterval = setInterval(() => {
+      updateTimer();
+      simulatePulse();
+      updateStatsDisplay();
+      draw();
+    }, SAMPLE_INTERVAL);
+
+  };
+
+  pauseBtn.onclick = () => {
     if (!isRecording || isPaused) return;
     isPaused = true;
+    pauseStartTime = performance.now();
     pauseBtn.disabled = true;
     resumeBtn.disabled = false;
     throbBtn.disabled = true;
-  });
+  };
 
-  resumeBtn.addEventListener("click", () => {
+  resumeBtn.onclick = () => {
     if (!isRecording || !isPaused) return;
     isPaused = false;
+    // Adjust recordingStartTime so timer continues correctly
+    const pausedDuration = performance.now() - pauseStartTime;
+    recordingStartTime += pausedDuration;
+    lastSampleTime += pausedDuration;
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
     throbBtn.disabled = false;
-    lastSampleTime = performance.now();
-  });
+  };
 
-  stopBtn.addEventListener("click", () => {
+  stopBtn.onclick = () => {
     if (!isRecording) return;
     isRecording = false;
     isPaused = false;
-    startBtn.disabled = false;
+    clearInterval(timerInterval);
+    updateTimer();
+    updateStatsDisplay();
+    draw();
+
     pauseBtn.disabled = true;
     resumeBtn.disabled = true;
     stopBtn.disabled = true;
     throbBtn.disabled = true;
+    startBtn.disabled = false;
+    downloadCSVBtn.disabled = throbs.length === 0;
 
-    // Prompt to save
-    const name = prompt("Enter a name to save this recording (Cancel to discard):");
-    if (name && name.trim()) {
-      if (saveRecording(name.trim())) {
-        alert("Recording saved.");
-      }
-    } else {
-      alert("Recording discarded.");
-    }
-  });
+    // Auto-save recording (prompt for name)
+    let recName = prompt("Enter name for recording:", `Recording_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}`);
+    if (recName === null || recName.trim() === "") recName = `Recording_${savedRecordings.length+1}`;
+    // Calculate stats to save
+    const peaksAll = findPeaksIn(pulseWave);
+    const pulsePeriod = 60000 / pulseBpm;
+    const firstPeaks = peaksAll.filter(t => ((t % pulsePeriod) / pulsePeriod) < 0.15);
+    const synchrony = calculateSynchrony(throbs.map(t => t.time), firstPeaks, pulsePeriod);
 
-  throbBtn.addEventListener("click", () => {
-    if (!isRecording || isPaused) return;
-    const now = performance.now();
-    throbs.push({ time: now });
-  });
+    addRecording(recName, pulseWave, throbs, pulseBpm, {
+      plv: synchrony.plv,
+      rayleighPval: synchrony.rayleighPval,
+      numPeaks: firstPeaks.length,
+    });
+    selectedRecordingIndex = savedRecordings.length - 1;
+    updateUIForLoadedRecording();
+  };
 
-  toggleAllBtn.addEventListener("click", () => {
+  throbBtn.onclick = () => {
+    markThrob();
+  };
+
+  toggleAllBtn.onclick = () => {
     allVisible = !allVisible;
-    toggleAllBtn.textContent = allVisible
-      ? "Hide All Stats, Markings & Waveform"
-      : "Show All Stats, Markings & Waveform";
-    if (!allVisible) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-  });
-
-  // === Main loop ===
-  function loop() {
-    if (isRecording && !isPaused) {
-      simulatePulse();
-      updateTimer();
-    }
+    toggleAllBtn.textContent = allVisible ? "Hide Waveform" : "Show Waveform";
     draw();
-    updateMetrics();
-    animationId = requestAnimationFrame(loop);
-  }
+  };
 
-  // Start animation loop on page load (stops drawing only if no recording and toggle off)
-  loop();
+  downloadCSVBtn.onclick = () => {
+    if (selectedRecordingIndex !== null) {
+      downloadCSVForRecording(selectedRecordingIndex);
+    } else {
+      downloadCSVForRecording();
+    }
+  };
 
-  // Render recordings on load (empty)
+  // Initial render of recordings list
   renderRecordingsList();
+
+  // Initial empty draw
+  clearCanvasAndUI();
+
 })();
 </script>
 
