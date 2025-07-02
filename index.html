@@ -1,121 +1,268 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pulse-Throb Simulator</title>
-  <style>
-    body { font-family: sans-serif; text-align: center; margin: 0; padding: 0; background: #f7f7f7; }
-    canvas { background: #fff; border: 1px solid #ccc; display: block; margin: 20px auto; }
-    button { margin: 10px; padding: 10px 20px; font-size: 16px; }
-    #recordings { margin-top: 20px; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pulse Throb Monitor (Simulated)</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 20px; }
+  #canvas { border: 1px solid #ccc; }
+  button { margin: 5px; }
+  #recordingsList { margin-top: 10px; }
+</style>
 </head>
 <body>
-  <h1>Pulse-Throb Simulator</h1>
-  <canvas id="waveform" width="800" height="200"></canvas>
-  <div>
-    <button onclick="startRecording()">Start Recording</button>
-    <button onclick="pauseRecording()">Pause</button>
-    <button onclick="resumeRecording()">Resume</button>
-    <button onclick="stopRecording()">Stop Recording</button>
-    <button onclick="markThrob()">Throb</button>
-    <button onclick="downloadCSV()">Download CSV</button>
-  </div>
-  <div id="recordings"></div>
 
-  <script>
-    const canvas = document.getElementById('waveform');
-    const ctx = canvas.getContext('2d');
-    let pulseData = [];
-    let throbTimestamps = [];
-    let markers = [];
-    let isRecording = false;
-    let startTime = 0;
-    let animationFrame;
+<h1>Pulse Throb Monitor (Simulated Pulse)</h1>
 
-    function generatePulse(t) {
-      return 50 * Math.sin(2 * Math.PI * 1.2 * t) + 100;
-    }
+<canvas id="canvas" width="800" height="200"></canvas><br/>
 
-    function drawWaveform(timeOffset) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+<button id="startBtn">Start Recording</button>
+<button id="pauseBtn" disabled>Pause Recording</button>
+<button id="resumeBtn" disabled>Resume Recording</button>
+<button id="stopBtn" disabled>Stop Recording</button>
+<button id="throbBtn" disabled>Mark Throb</button>
+
+<div>Timer: <span id="timer">00:00</span></div>
+
+<h3>Recordings:</h3>
+<ul id="recordingsList"></ul>
+
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const startBtn = document.getElementById('startBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const resumeBtn = document.getElementById('resumeBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const throbBtn = document.getElementById('throbBtn');
+  const timerDisplay = document.getElementById('timer');
+  const recordingsList = document.getElementById('recordingsList');
+
+  let pulseWave = [];
+  let throbs = [];
+  let recordingStartTime = null;
+  let timerInterval = null;
+  let isRecording = false;
+  let isPaused = false;
+  let recordingElapsed = 0;
+  let animationId;
+
+  const DISPLAY_DURATION = 20000;
+  const SAMPLE_INTERVAL = 20;
+
+  // Heart rate simulation
+  let bpm = 80;
+  let phase = 0;
+
+  // Update simulated heart rate periodically
+  setInterval(() => {
+    bpm = 60 + Math.random() * 40;
+  }, 5000);
+
+  setInterval(() => {
+    if (!isRecording || isPaused) return;
+    const now = performance.now();
+    const frequency = bpm / 60;
+    const amplitude = 50;
+    const baseline = 100;
+    const value = baseline + amplitude * Math.sin(2 * Math.PI * frequency * (now / 1000));
+    pulseWave.push({ time: now, value });
+    cleanupPulseWave();
+  }, SAMPLE_INTERVAL);
+
+  function cleanupPulseWave() {
+    const now = performance.now();
+    pulseWave = pulseWave.filter(p => p.time >= now - DISPLAY_DURATION);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const now = performance.now();
+    const startTime = now - DISPLAY_DURATION;
+
+    // Draw pulse waveform
+    if (pulseWave.length >= 2) {
       ctx.beginPath();
-      for (let x = 0; x < canvas.width; x++) {
-        let t = (x + timeOffset) / 100;
-        let y = generatePulse(t);
-        ctx.lineTo(x, canvas.height / 2 - y / 2);
+      for (let i = 0; i < pulseWave.length; i++) {
+        const p = pulseWave[i];
+        const x = ((p.time - startTime) / DISPLAY_DURATION) * canvas.width;
+        const y = canvas.height - p.value;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-      ctx.strokeStyle = 'blue';
+      ctx.strokeStyle = '#0077cc';
+      ctx.lineWidth = 2;
       ctx.stroke();
-
-      // Draw markers
-      markers.forEach(marker => {
-        let x = canvas.width - ((Date.now() - marker.timestamp) / 10);
-        if (x >= 0 && x <= canvas.width) {
-          ctx.beginPath();
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, canvas.height);
-          ctx.strokeStyle = 'red';
-          ctx.stroke();
-        }
-      });
     }
 
-    function animate() {
-      let now = Date.now();
-      drawWaveform(now - startTime);
-      animationFrame = requestAnimationFrame(animate);
-    }
+    // Draw throbs
+    throbs.forEach(throb => {
+      if (throb.time < startTime || throb.time > now) return;
+      const y = canvas.height - interpolatePulseValue(throb.time);
+      const x = ((throb.time - startTime) / DISPLAY_DURATION) * canvas.width;
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, 2 * Math.PI);
+      ctx.fillStyle = 'red';
+      ctx.fill();
+    });
 
-    function startRecording() {
-      pulseData = [];
-      throbTimestamps = [];
-      markers = [];
-      startTime = Date.now();
-      isRecording = true;
-      animate();
-    }
+    animationId = requestAnimationFrame(draw);
+  }
 
-    function pauseRecording() {
-      cancelAnimationFrame(animationFrame);
-      isRecording = false;
-    }
-
-    function resumeRecording() {
-      if (!isRecording) {
-        isRecording = true;
-        animate();
+  function interpolatePulseValue(t) {
+    if (pulseWave.length === 0) return null;
+    for (let i = 1; i < pulseWave.length; i++) {
+      if (pulseWave[i].time >= t) {
+        const p1 = pulseWave[i - 1];
+        const p2 = pulseWave[i];
+        const ratio = (t - p1.time) / (p2.time - p1.time);
+        return p1.value + ratio * (p2.value - p1.value);
       }
     }
+    return pulseWave[pulseWave.length - 1].value;
+  }
 
-    function stopRecording() {
-      cancelAnimationFrame(animationFrame);
-      isRecording = false;
-    }
-
-    function markThrob() {
-      if (isRecording) {
-        const timestamp = Date.now() - startTime;
-        throbTimestamps.push(timestamp);
-        markers.push({ timestamp: Date.now() });
+  function findPeaksInPulse() {
+    const peakTimes = [];
+    for (let i = 1; i < pulseWave.length - 1; i++) {
+      if (pulseWave[i].value > pulseWave[i - 1].value &&
+          pulseWave[i].value > pulseWave[i + 1].value) {
+        peakTimes.push(pulseWave[i].time);
       }
     }
+    return peakTimes;
+  }
 
-    function downloadCSV() {
-      let csv = 'ThrobTimestamp(ms)\n';
-      throbTimestamps.forEach((t) => {
-        csv += `${t}\n`;
-      });
-      const blob = new Blob([csv], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `throb_recording_${Date.now()}.csv`;
-      a.click();
+  function calculatePhase(throbTime) {
+    const peaks = findPeaksInPulse();
+    if (peaks.length < 2) return null;
+
+    let prevPeak = null;
+    let nextPeak = null;
+    for (let i = 0; i < peaks.length - 1; i++) {
+      if (peaks[i] <= throbTime && peaks[i + 1] > throbTime) {
+        prevPeak = peaks[i];
+        nextPeak = peaks[i + 1];
+        break;
+      }
     }
-  </script>
-</body>
-</html>
+    if (prevPeak === null || nextPeak === null) return null;
+
+    const cycleDuration = nextPeak - prevPeak;
+    const phase = 2 * Math.PI * (throbTime - prevPeak) / cycleDuration;
+    return phase;
+  }
+
+  function calculatePLV() {
+    if (throbs.length === 0) return 0;
+    let sumReal = 0, sumImag = 0;
+    throbs.forEach(({ phase }) => {
+      if (phase === null) return;
+      sumReal += Math.cos(phase);
+      sumImag += Math.sin(phase);
+    });
+    const n = throbs.filter(t => t.phase !== null).length;
+    return n === 0 ? 0 : Math.sqrt(sumReal * sumReal + sumImag * sumImag) / n;
+  }
+
+  function updateTimer() {
+    recordingElapsed = performance.now() - recordingStartTime;
+    const totalSeconds = Math.floor(recordingElapsed / 1000);
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    timerDisplay.textContent = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  function saveRecording() {
+    if (throbs.length === 0) {
+      alert('No throbs marked');
+      return;
+    }
+
+    const header = ['Throb Number', 'Throb Timestamp (ms)', 'Phase Angle (radians)'];
+    const rows = throbs.map((t, i) => [i + 1, (t.time - recordingStartTime).toFixed(2), t.phase?.toFixed(4) ?? 'N/A']);
+    const plv = calculatePLV();
+
+    let csv = header.join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
+    csv += `\nPLV for recording:,${plv.toFixed(4)}\n`;
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `simulated_pulse_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    const li = document.createElement('li');
+    li.textContent = a.download;
+    recordingsList.appendChild(li);
+
+    throbs = [];
+    recordingElapsed = 0;
+    timerDisplay.textContent = '00:00';
+  }
+
+  startBtn.onclick = () => {
+    isRecording = true;
+    isPaused = false;
+    recordingStartTime = performance.now();
+    recordingElapsed = 0;
+    throbs = [];
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    resumeBtn.disabled = true;
+    stopBtn.disabled = false;
+    throbBtn.disabled = false;
+    timerInterval = setInterval(updateTimer, 100);
+    animationId = requestAnimationFrame(draw);
+  };
+
+  pauseBtn.onclick = () => {
+    if (!isRecording || isPaused) return;
+    isPaused = true;
+    pauseBtn.disabled = true;
+    resumeBtn.disabled = false;
+    throbBtn.disabled = true;
+    clearInterval(timerInterval);
+  };
+
+  resumeBtn.onclick = () => {
+    if (!isRecording || !isPaused) return;
+    isPaused = false;
+    pauseBtn.disabled = false;
+    resumeBtn.disabled = true;
+    throbBtn.disabled = false;
+    recordingStartTime = performance.now() - recordingElapsed;
+    timerInterval = setInterval(updateTimer, 100);
+  };
+
+  stopBtn.onclick = () => {
+    if (!isRecording) return;
+    isRecording = false;
+    isPaused = false;
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+    resumeBtn.disabled = true;
+    stopBtn.disabled = true;
+    throbBtn.disabled = true;
+    clearInterval(timerInterval);
+    cancelAnimationFrame(animationId);
+    updateTimer();
+    saveRecording();
+  };
+
+  throbBtn.onclick = () => {
+    if (!isRecording || isPaused) return;
+    const time = performance.now();
+    const phase = calculatePhase(time);
+    throbs.push({ time, phase });
+  };
+})();
+</script>
+
 </body>
 </html>
