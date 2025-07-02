@@ -82,22 +82,25 @@
     simulatePulse();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const now = performance.now();
-    const start = now - DISPLAY_DURATION;
+    if (!allVisible) {
+      // When stats/markings are hidden, also hide the pulse waveform by not drawing anything
+      // Canvas is cleared above, so just skip drawing
+    } else {
+      const now = performance.now();
+      const start = now - DISPLAY_DURATION;
 
-    // Draw waveform line
-    ctx.beginPath();
-    pulseWave.forEach((p, i) => {
-      const x = ((p.time - start) / DISPLAY_DURATION) * canvas.width;
-      const y = canvas.height - p.value;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = "blue";
-    ctx.lineWidth = 2;
-    ctx.stroke();
+      // Draw waveform line
+      ctx.beginPath();
+      pulseWave.forEach((p, i) => {
+        const x = ((p.time - start) / DISPLAY_DURATION) * canvas.width;
+        const y = canvas.height - p.value;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = "blue";
+      ctx.lineWidth = 2;
+      ctx.stroke();
 
-    if (allVisible) {
       // Draw throbs (red circles)
       throbs.forEach(throb => {
         if (throb.time < start || throb.time > now) return;
@@ -338,8 +341,6 @@
     if (!isRecording) return;
     isRecording = false;
     isPaused = false;
-    cancelAnimationFrame(animationId);
-    clearInterval(timerInterval);
 
     startBtn.disabled = false;
     pauseBtn.disabled = true;
@@ -347,26 +348,28 @@
     stopBtn.disabled = true;
     throbBtn.disabled = true;
 
-    updateTimer();
-    updateMetricsDisplay();
+    clearInterval(timerInterval);
+    cancelAnimationFrame(animationId);
+
+    timerDisplay.textContent = "00:00";
+    metricsDisplay.innerHTML = "";
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
   });
 
   throbBtn.addEventListener("click", () => {
     if (!isRecording || isPaused) return;
-    const t = performance.now();
-    throbs.push({ time: t });
+    throbs.push({ time: performance.now() });
   });
 
   toggleAllBtn.addEventListener("click", () => {
     allVisible = !allVisible;
     toggleAllBtn.textContent = allVisible ? "Hide All Stats & Markings" : "Show All Stats & Markings";
-    if (!allVisible) {
+    if (!isRecording) {
+      // Just clear display if not recording
       metricsDisplay.innerHTML = "";
-    } else {
-      updateMetricsDisplay();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
   });
-
 })();
 </script>
 
