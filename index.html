@@ -7,31 +7,43 @@
 <style>
   body {
     font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background: #f4f4f4;
   }
   #container {
-    max-width: 900px;
+    max-width: 960px;
     margin: 20px auto;
     text-align: center;
+    padding: 10px;
+    background: white;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
   }
   canvas {
     border: 1px solid #ccc;
     background: #fafafa;
+    max-width: 100%;
+    height: auto;
   }
   #stats {
     margin-top: 15px;
     font-size: 14px;
     text-align: left;
-    max-width: 900px;
-    margin-left: auto;
-    margin-right: auto;
-    white-space: pre-wrap;
     background: #eee;
     padding: 10px;
     border-radius: 4px;
     font-family: monospace;
+    overflow-x: auto;
   }
-  button {
+  button, select {
     margin: 5px;
+    padding: 8px 12px;
+    font-size: 14px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+  }
+  button:hover, select:hover {
+    background-color: #f0f0f0;
   }
 </style>
 </head>
@@ -45,7 +57,7 @@
     <button id="toggleDisplayBtn">Hide Waveform & Stats</button>
     <button id="downloadCSVBtn">Download CSV</button>
   </div>
-  <select id="savedRecordings" style="margin-top:10px;">
+  <select id="savedRecordings">
     <option value="">-- Select Saved Recording --</option>
   </select>
   <pre id="stats" style="display:none;"></pre>
@@ -55,7 +67,6 @@
 (() => {
   const canvas = document.getElementById('pulseCanvas');
   const ctx = canvas.getContext('2d');
-
   const markThrobBtn = document.getElementById('markThrobBtn');
   const saveBtn = document.getElementById('saveBtn');
   const showStatsBtn = document.getElementById('showStatsBtn');
@@ -64,43 +75,24 @@
   const savedRecordingsSelect = document.getElementById('savedRecordings');
   const statsPre = document.getElementById('stats');
 
-  // --- Data ---
-  const durationSec = 20; // show last 20 seconds on canvas
-  const samplingIntervalMs = 50; // 20Hz sampling (50ms)
-  const totalPoints = durationSec * 1000 / samplingIntervalMs; // number of points to show
+  const durationSec = 20;
+  const samplingIntervalMs = 50;
+  const totalPoints = durationSec * 1000 / samplingIntervalMs;
 
-  // Store all pulse data points
-  let pulseData = [];
-  // Store marked throbs: {timeMs, value}
-  let throbs = [];
-  // Store detected peaks: {timeMs, value}
-  let peaks = [];
+  let pulseData = [], throbs = [], peaks = [], savedRecordings = [], displayOn = true;
+  let currentStats = null;
 
-  // Saved recordings: array of {pulseData, throbs, peaks, timestamp}
-  let savedRecordings = [];
+  function nowMs() { return performance.now(); }
 
-  // Canvas display toggle flag
-  let displayOn = true;
-
-  // --- Helpers ---
-  function nowMs() {
-    return performance.now();
-  }
-
-  // Generate simulated pulse waveform (sine + noise)
-  function generatePulseValue(tMs) {
-    // Base pulse: 1 Hz sine wave (60 bpm)
-    // Add noise for realism
+  function generateArterialPulse(tMs) {
     const tSec = tMs / 1000;
-    const frequencyHz = 1; // 1 Hz pulse rate ~ 60 bpm
-    const sineVal = Math.sin(2 * Math.PI * frequencyHz * tSec);
-    // Add some Gaussian noise
-    const noise = (Math.random() - 0.5) * 0.4;
-    return sineVal + noise;
+    const frequency = 1.1; // ~66 bpm
+    const alpha = 10 * frequency;
+    const beta = 0.6 * frequency;
+    const wave = Math.pow(tSec % (1/frequency), 2) * Math.exp(-alpha * (tSec % (1/frequency))) * Math.sin(2 * Math.PI * frequency * tSec);
+    return wave + (Math.random() - 0.5) * 0.2;
   }
 
-  // Detect peaks (local maxima) in pulseData array (simple)
-  // Returns array of peaks {timeMs, value}
   function detectPeaks(data) {
     const detected = [];
     for (let i = 1; i < data.length - 1; i++) {
@@ -111,348 +103,185 @@
     return detected;
   }
 
-  // Calculate phase of throbs relative to peaks
-  // For each throb, find the two closest peaks around it (previous and next)
-  // Phase is the fraction along between previous and next peak mapped to [0, 2π)
   function calculatePhases(throbs, peaks) {
     const phases = [];
-
-    // Sort peaks by time ascending
     const sortedPeaks = [...peaks].sort((a,b) => a.timeMs - b.timeMs);
-
     for (const throb of throbs) {
-      // Find the peak before and after the throb
-      let prevPeak = null;
-      let nextPeak = null;
-      for (let i = 0; i < sortedPeaks.length; i++) {
-        if (sortedPeaks[i].timeMs <= throb.timeMs) {
-          prevPeak = sortedPeaks[i];
-        }
-        if (sortedPeaks[i].timeMs > throb.timeMs) {
-          nextPeak = sortedPeaks[i];
+      let prev = null, next = null;
+      for (let p of sortedPeaks) {
+        if (p.timeMs <= throb.timeMs) prev = p;
+        if (p.timeMs > throb.timeMs) {
+          next = p;
           break;
         }
       }
-      if (prevPeak && nextPeak) {
-        const cycleLength = nextPeak.timeMs - prevPeak.timeMs;
-        const position = throb.timeMs - prevPeak.timeMs;
-        let phase = (position / cycleLength) * 2 * Math.PI;
-        // Normalize phase 0..2π
-        phase = ((phase % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-        phases.push(phase);
+      if (prev && next) {
+        const phase = ((throb.timeMs - prev.timeMs) / (next.timeMs - prev.timeMs)) * 2 * Math.PI;
+        phases.push((phase + 2 * Math.PI) % (2 * Math.PI));
       }
-      // If no two peaks surround throb, skip phase for that throb
     }
     return phases;
   }
 
-  // Calculate Mean Resultant Vector for phase locking stats
-  // Returns: {meanPhase, plv}
   function calculatePhaseLocking(phases) {
-    if (phases.length === 0) return {meanPhase: null, plv: null};
-    let sumSin = 0;
-    let sumCos = 0;
-    for (const phase of phases) {
-      sumSin += Math.sin(phase);
-      sumCos += Math.cos(phase);
+    if (!phases.length) return {meanPhase: null, plv: null};
+    let sinSum = 0, cosSum = 0;
+    for (let p of phases) {
+      sinSum += Math.sin(p);
+      cosSum += Math.cos(p);
     }
-    const meanSin = sumSin / phases.length;
-    const meanCos = sumCos / phases.length;
-    const meanPhase = Math.atan2(meanSin, meanCos);
-    const plv = Math.sqrt(meanSin * meanSin + meanCos * meanCos);
+    const n = phases.length;
+    const meanPhase = Math.atan2(sinSum / n, cosSum / n);
+    const plv = Math.sqrt(Math.pow(sinSum / n, 2) + Math.pow(cosSum / n, 2));
     return {meanPhase, plv};
   }
 
-  // Rayleigh test for non-uniformity of circular data
-  // returns p-value (approximate)
   function rayleighTest(phases) {
-    if (phases.length === 0) return null;
+    if (!phases.length) return null;
     const n = phases.length;
-    let sumSin = 0;
-    let sumCos = 0;
-    for (const phase of phases) {
-      sumSin += Math.sin(phase);
-      sumCos += Math.cos(phase);
+    let sumSin = 0, sumCos = 0;
+    for (let p of phases) {
+      sumSin += Math.sin(p);
+      sumCos += Math.cos(p);
     }
-    const R = Math.sqrt(sumSin * sumSin + sumCos * sumCos);
+    const R = Math.sqrt(sumSin**2 + sumCos**2);
     const Rbar = R / n;
-    const Z = n * Rbar * Rbar;
-    // Approximate p-value (for large n)
-    const p = Math.exp(Math.sqrt(1 + 4 * n + 4 * (n * n - R * R)) - (1 + 2 * n));
-    // A better approximation for p-value:
-    // const p2 = Math.exp(-Z) * (1 + (2 * Z - Z * Z) / (4 * n) - (24 * Z - 132 * Z * Z + 76 * Z * Z * Z - 9 * Z * Z * Z * Z) / (288 * n * n));
-    // return p2;
-    return p;
+    const Z = n * Rbar ** 2;
+    return Math.exp(-Z);
   }
 
-  // Calculate mean pulse rate (bpm) from detected peaks
-  // Using average inter-peak interval
   function calculateMeanPulseRate(peaks) {
     if (peaks.length < 2) return null;
-    const intervals = [];
-    for (let i = 1; i < peaks.length; i++) {
-      intervals.push(peaks[i].timeMs - peaks[i-1].timeMs);
-    }
-    const meanIntervalMs = intervals.reduce((a,b) => a+b, 0) / intervals.length;
-    if (meanIntervalMs === 0) return null;
-    const bpm = 60000 / meanIntervalMs;
+    let totalTime = peaks[peaks.length - 1].timeMs - peaks[0].timeMs;
+    let bpm = (peaks.length - 1) / (totalTime / 60000);
     return bpm;
   }
 
-  // Format floating point to fixed decimals safely
-  function formatFixed(value, decimals=3) {
-    if (value === null || value === undefined) return 'N/A';
-    return value.toFixed(decimals);
-  }
+  function formatFixed(v, d=3) { return v === null ? 'N/A' : v.toFixed(d); }
 
-  // --- Drawing ---
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
     if (!displayOn) return;
 
-    // Draw pulse waveform (blue)
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = '#007bff';
+    const now = nowMs();
+    const start = now - durationSec * 1000;
+    const mapX = t => ((t - start) / (durationSec * 1000)) * canvas.width;
+    const mapY = v => canvas.height/2 - (v * canvas.height/4);
+
     ctx.beginPath();
-    if (pulseData.length > 0) {
-      for (let i = 0; i < pulseData.length; i++) {
-        const p = pulseData[i];
-        // Map time to canvas X (last durationSec seconds from right to left)
-        // We show from (now - durationSec*1000) to now on X-axis
-        const now = pulseData[pulseData.length-1].timeMs;
-        const x = ((p.timeMs - (now - durationSec * 1000)) / (durationSec * 1000)) * canvas.width;
-        // Map pulse value from [-1.5, 1.5] to Y
-        const y = canvas.height/2 - (p.value * (canvas.height/3));
-        if (i === 0) ctx.moveTo(x,y);
-        else ctx.lineTo(x,y);
-      }
-    }
+    ctx.strokeStyle = '#007bff';
+    pulseData.forEach((p, i) => {
+      const x = mapX(p.timeMs), y = mapY(p.value);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
     ctx.stroke();
 
-    // Draw peaks (green)
     ctx.fillStyle = 'green';
-    for (const peak of peaks) {
-      const now = pulseData.length > 0 ? pulseData[pulseData.length-1].timeMs : 0;
-      if (peak.timeMs < now - durationSec * 1000) continue;
-      const x = ((peak.timeMs - (now - durationSec * 1000)) / (durationSec * 1000)) * canvas.width;
-      const y = canvas.height/2 - (peak.value * (canvas.height/3));
-      ctx.beginPath();
-      ctx.arc(x, y, 5, 0, 2 * Math.PI);
-      ctx.fill();
-    }
-
-    // Draw throbs (red)
+    peaks.forEach(p => ctx.beginPath(), ctx.arc(mapX(p.timeMs), mapY(p.value), 3, 0, 2 * Math.PI), ctx.fill());
     ctx.fillStyle = 'red';
-    for (const throb of throbs) {
-      const now = pulseData.length > 0 ? pulseData[pulseData.length-1].timeMs : 0;
-      if (throb.timeMs < now - durationSec * 1000) continue;
-      const x = ((throb.timeMs - (now - durationSec * 1000)) / (durationSec * 1000)) * canvas.width;
-      const y = canvas.height/2 - (throb.value * (canvas.height/3));
-      ctx.beginPath();
-      ctx.arc(x, y, 6, 0, 2 * Math.PI);
-      ctx.fill();
-    }
-
-    // Draw stats text on canvas
-    ctx.fillStyle = '#222';
-    ctx.font = '16px monospace';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
+    throbs.forEach(p => ctx.beginPath(), ctx.arc(mapX(p.timeMs), mapY(p.value), 4, 0, 2 * Math.PI), ctx.fill());
 
     if (currentStats) {
-      const lines = [
+      const txt = [
         `Throbs: ${currentStats.throbCount}`,
         `Mean Phase (rad): ${formatFixed(currentStats.meanPhase)}`,
         `PLV: ${formatFixed(currentStats.plv)}`,
         `Rayleigh p-value: ${formatFixed(currentStats.pValue,5)}`,
-        `Mean Pulse Rate (bpm): ${formatFixed(currentStats.meanPulseRate)}`
+        `Mean Pulse Rate (bpm): ${formatFixed(currentStats.meanPulseRate)}`,
+        `Peak Count: ${currentStats.peakCount}`
       ];
-      for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], 10, 10 + i * 20);
-      }
+      ctx.fillStyle = '#333';
+      ctx.font = '14px monospace';
+      txt.forEach((line, i) => ctx.fillText(line, 10, 10 + i * 20));
     }
   }
 
-  // --- Update pulseData ---
   function updatePulse() {
     const t = nowMs();
-    const val = generatePulseValue(t);
-    pulseData.push({timeMs: t, value: val});
-
-    // Keep only last totalPoints
+    pulseData.push({ timeMs: t, value: generateArterialPulse(t) });
     if (pulseData.length > totalPoints) pulseData.shift();
-
-    // Update peaks every update
     peaks = detectPeaks(pulseData);
-
     draw();
   }
 
-  // --- Save current recording ---
-  function saveRecording() {
-    // Deep copy arrays
-    const recording = {
-      pulseData: [...pulseData],
-      throbs: [...throbs],
-      peaks: [...peaks],
-      timestamp: new Date().toISOString()
-    };
-    savedRecordings.push(recording);
+  setInterval(updatePulse, samplingIntervalMs);
 
-    // Add to dropdown
+  markThrobBtn.onclick = () => {
+    if (!pulseData.length) return;
+    throbs.push({ ...pulseData[pulseData.length - 1] });
+    draw();
+  };
+
+  saveBtn.onclick = () => {
+    if (!throbs.length || !pulseData.length) return alert('Missing data.');
+    const rec = { pulseData: [...pulseData], throbs: [...throbs], peaks: [...peaks], timestamp: new Date().toISOString() };
+    savedRecordings.push(rec);
     const opt = document.createElement('option');
     opt.value = savedRecordings.length - 1;
-    opt.textContent = `Recording ${savedRecordings.length} (${recording.timestamp})`;
+    opt.textContent = `Recording ${savedRecordings.length} (${rec.timestamp})`;
     savedRecordingsSelect.appendChild(opt);
-
     alert('Recording saved.');
-  }
+  };
 
-  // --- Show stats for selected recording ---
-  let currentStats = null;
-  function showStats() {
+  showStatsBtn.onclick = () => {
     const idx = savedRecordingsSelect.value;
-    if (idx === '') {
-      alert('Please select a saved recording.');
-      return;
-    }
+    if (!idx) return alert('Select a recording.');
     const rec = savedRecordings[idx];
-    if (!rec) return;
-
-    // Calculate phases
     const phases = calculatePhases(rec.throbs, rec.peaks);
-
-    // Calculate stats
-    const {meanPhase, plv} = calculatePhaseLocking(phases);
+    const { meanPhase, plv } = calculatePhaseLocking(phases);
     const pValue = rayleighTest(phases);
     const meanPulseRate = calculateMeanPulseRate(rec.peaks);
+
+    let deltaTimes = rec.throbs.map((t, i, a) => i === 0 ? 'N/A' : (t.timeMs - a[i-1].timeMs).toFixed(0));
 
     currentStats = {
       throbCount: rec.throbs.length,
       meanPhase,
       plv,
       pValue,
-      meanPulseRate
+      meanPulseRate,
+      peakCount: rec.peaks.length
     };
 
-    // Display in text area
-    const statsText =
-`--- Recording Stats ---
-Timestamp: ${rec.timestamp}
-
-Number of Throbs: ${rec.throbs.length}
-Mean Phase (radians): ${formatFixed(meanPhase)}
-Phase Locking Value (PLV): ${formatFixed(plv)}
-Rayleigh p-value: ${formatFixed(pValue, 5)}
-Mean Pulse Rate (bpm): ${formatFixed(meanPulseRate)}
-
----
-
-Throbs (Index, Time ms, Time s, Phase rad, Pulse Value):
-${rec.throbs.map((t,i) => {
-  // Calculate phase for each throb again for CSV
-  let phaseStr = 'N/A';
-  if (phases[i] !== undefined) phaseStr = formatFixed(phases[i]);
-  return `${i+1},${formatFixed(t.timeMs,0)},${formatFixed(t.timeMs/1000)},${phaseStr},${formatFixed(t.value)}`;
-}).join('\n')}
-`;
-
-    statsPre.textContent = statsText;
+    statsPre.textContent = `--- Stats ---\n${rec.throbs.map((t, i) => {
+      const phase = phases[i] ? formatFixed(phases[i]) : 'N/A';
+      return `Throb ${i+1}: Time=${t.timeMs.toFixed(0)} ms, Δ=${deltaTimes[i]} ms, Phase=${phase}, Val=${t.value.toFixed(3)}`;
+    }).join('\n')}`;
     statsPre.style.display = 'block';
-
     draw();
-  }
+  };
 
-  // --- Download CSV ---
-  function downloadCSV() {
+  downloadCSVBtn.onclick = () => {
     const idx = savedRecordingsSelect.value;
-    if (idx === '') {
-      alert('Please select a saved recording.');
-      return;
-    }
+    if (!idx) return alert('Select a recording.');
     const rec = savedRecordings[idx];
-    if (!rec) return;
-
-    // Calculate phases
     const phases = calculatePhases(rec.throbs, rec.peaks);
-
-    // CSV headers
-    let csv = 'Index,Time(ms),Time(s),Phase(rad),Pulse Value\n';
+    const csvRows = [
+      'Index,Time(ms),Delta(ms),Phase(rad),Pulse Value'
+    ];
+    let lastTime = null;
     rec.throbs.forEach((t, i) => {
-      let phaseStr = 'N/A';
-      if (phases[i] !== undefined) phaseStr = phases[i].toFixed(5);
-      csv += `${i+1},${t.timeMs.toFixed(0)},${(t.timeMs/1000).toFixed(3)},${phaseStr},${t.value.toFixed(5)}\n`;
+      const phase = phases[i] ? phases[i].toFixed(5) : 'N/A';
+      const dt = lastTime === null ? 'N/A' : (t.timeMs - lastTime).toFixed(0);
+      csvRows.push(`${i+1},${t.timeMs.toFixed(0)},${dt},${phase},${t.value.toFixed(5)}`);
+      lastTime = t.timeMs;
     });
-
-    // Add overall stats summary
-    const {meanPhase, plv} = calculatePhaseLocking(phases);
-    const pValue = rayleighTest(phases);
-    const meanPulseRate = calculateMeanPulseRate(rec.peaks);
-
-    csv += `\nOverall Statistics\n`;
-    csv += `Number of Throbs,${rec.throbs.length}\n`;
-    csv += `Mean Phase (rad),${formatFixed(meanPhase)}\n`;
-    csv += `Phase Locking Value,${formatFixed(plv)}\n`;
-    csv += `Rayleigh p-value,${formatFixed(pValue,5)}\n`;
-    csv += `Mean Pulse Rate (bpm),${formatFixed(meanPulseRate)}\n`;
-
-    // Download CSV
-    const blob = new Blob([csv], {type: 'text/csv'});
+    const blob = new Blob([csvRows.join('\n')], {type: 'text/csv'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `recording_${idx+1}_stats.csv`;
+    a.download = `recording_${idx}_throbs.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }
+  };
 
-  // --- Button event handlers ---
-  markThrobBtn.addEventListener('click', () => {
-    // Mark latest pulse data point as throb
-    if (pulseData.length === 0) return;
-    const lastPoint = pulseData[pulseData.length - 1];
-    throbs.push({...lastPoint});
-    draw();
-  });
-
-  saveBtn.addEventListener('click', () => {
-    if (pulseData.length === 0) {
-      alert('No pulse data to save.');
-      return;
-    }
-    if (throbs.length === 0) {
-      alert('No throbs marked to save.');
-      return;
-    }
-    saveRecording();
-  });
-
-  showStatsBtn.addEventListener('click', () => {
-    showStats();
-  });
-
-  downloadCSVBtn.addEventListener('click', () => {
-    downloadCSV();
-  });
-
-  savedRecordingsSelect.addEventListener('change', () => {
-    statsPre.style.display = 'none';
-    currentStats = null;
-    draw();
-  });
-
-  toggleDisplayBtn.addEventListener('click', () => {
+  toggleDisplayBtn.onclick = () => {
     displayOn = !displayOn;
     toggleDisplayBtn.textContent = displayOn ? 'Hide Waveform & Stats' : 'Show Waveform & Stats';
-    // Also toggle stats display pre
-    if (!displayOn) {
-      statsPre.style.display = 'none';
-    } else if (currentStats !== null) {
-      statsPre.style.display = 'block';
-    }
+    statsPre.style.display = displayOn && currentStats ? 'block' : 'none';
     draw();
-  });
-
-  // --- Initialize pulse data generation ---
-  set
+  };
+})();
+</script>
+</body>
+</html>
