@@ -38,13 +38,13 @@
 
     let startTime, timerInterval, isPaused = false, pauseStart, pausedDuration = 0;
     let ecgData = [], rPeaks = [], throbs = [], bpm = 70, bpmChanges = [], phaseData = [];
-    let lastBpmChange = 0, recording = false;
+    let lastBpmChange = 0, recording = false, canvasOffset = 0;
     let recordings = [];
 
     const canvasWidth = canvas.width;
     const canvasHeight = canvas.height;
     const ecgBuffer = 5000; // ms
-    const PTT = 200; // ms pulse transit time for middle meningeal artery
+    const PTT = 200; // ms pulse transit time offset for arterial pulse analysis
 
     function generateECGWave(t, bpm) {
       const beatInterval = 60000 / bpm;
@@ -78,7 +78,7 @@
 
     function detectRPeaks() {
       rPeaks = [];
-      const threshold = 0.8;
+      const threshold = 0.5;  // Lowered threshold for peak detection
       for (let i = 1; i < ecgData.length - 1; i++) {
         const prev = ecgData[i - 1].value;
         const curr = ecgData[i].value;
@@ -192,20 +192,20 @@
     }
 
     function computeStatistics() {
+      phaseData = []; // Reset phaseData
       const data = throbs.map(throb => {
-        // Adjust R peak time with PTT to simulate arterial arrival
-        const prior = rPeaks.filter(p => p.time + PTT <= throb).slice(-1)[0];
-        const next = rPeaks.find(p => p.time + PTT > throb);
-        const delta = prior ? throb - (prior.time + PTT) : null;
-        const interval = prior && next ? (next.time + PTT) - (prior.time + PTT) : null;
-        const phase = interval ? ((throb - (prior.time + PTT)) / interval) * 2 * Math.PI : null;
+        const prior = rPeaks.filter(p => p.time <= throb).slice(-1)[0];
+        const next = rPeaks.find(p => p.time > throb);
+        const delta = prior ? throb - prior.time : null;
+        const interval = prior && next ? next.time - prior.time : null;
+        const phase = interval ? ((throb - prior.time) / interval) * 2 * Math.PI : null;
         if (phase != null) phaseData.push(phase);
         return {
-          throbTime: throb.toFixed(2),
-          priorPeakTime: prior ? (prior.time + PTT).toFixed(2) : '',
-          delta: delta != null ? delta.toFixed(2) : '',
-          bpm: prior ? prior.bpm : '',
-          phase: phase != null ? phase.toFixed(4) : ''
+          throbTime: throb,
+          priorPeakTime: prior?.time ?? '',
+          delta: delta ?? '',
+          bpm: prior?.bpm ?? '',
+          phase: phase ?? ''
         };
       });
 
@@ -213,7 +213,7 @@
       const p = calcRayleighP(R, phaseData.length);
       const PVL = R;
       const meanAngle = calcMeanAngle(phaseData);
-      const deltaStd = std(data.map(d => Number(d.delta)).filter(d => !isNaN(d)));
+      const deltaStd = std(data.map(d => d.delta).filter(d => d !== ''));
 
       return {
         data,
@@ -221,102 +221,94 @@
         totalPeaks: rPeaks.length,
         meanBPM: (rPeaks.length / (ecgData[ecgData.length - 1].time / 60000)).toFixed(2),
         rayleighR: R.toFixed(4),
-        rayleighP: p,
+        rayleighP: p < 0.001 ? '<0.001' : p.toFixed(3),
         PVL: PVL.toFixed(4),
         deltaStd: deltaStd.toFixed(2),
         meanAngle: meanAngle.toFixed(4)
       };
     }
 
-    function listRecordings() {
-      const list = document.getElementById('recordingsList');
-      list.innerHTML = '';
-      recordings.forEach((rec, i) => {
-        const div = document.createElement('div');
-        div.innerHTML = `${rec.name} <button onclick="downloadCSV(${i})">Download CSV</button>`;
-        list.appendChild(div);
-      });
-    }
-
-    function downloadCSV(index) {
-      const rec = recordings[index];
-      const summary = rec.summary;
-
-      // Format Rayleigh p-value nicely
-      let rayleighPFormatted = Number(summary.rayleighP);
-      if (rayleighPFormatted < 0.001) rayleighPFormatted = "<0.001";
-      else rayleighPFormatted = rayleighPFormatted.toFixed(3);
-
-      // Header summary lines (commented out with #)
-      const headerLines = [
-        `# Recording Name: ${rec.name}`,
-        `# Pulse Transit Time (ms): ${PTT}`,
-        `# Total Throb Count: ${summary.totalThrobs}`,
-        `# Total R Peak Count: ${summary.totalPeaks}`,
-        `# Mean BPM: ${summary.meanBPM}`,
-        `# Rayleigh R: ${summary.rayleighR}`,
-        `# Rayleigh p-value: ${rayleighPFormatted}`,
-        `# Phase Vector Length (PVL): ${summary.PVL}`,
-        `# Std Dev of Delta (ms): ${summary.deltaStd}`,
-        `# Mean Vector Angle (radians): ${summary.meanAngle}`,
-        ''
-      ];
-
-      // Raw data header
-      const dataHeader = ['Throb Time (ms)', 'Prior R Peak Time (ms)', 'Delta (ms)', 'BPM at prior R', 'Phase (radians)'];
-      const rows = summary.data.map(d => [
-        d.throbTime, d.priorPeakTime, d.delta, d.bpm, d.phase
-      ]);
-
-      // Build CSV content
-      let csvContent = headerLines.join('\n') + dataHeader.join(',') + '\n';
-      rows.forEach(row => {
-        csvContent += row.join(',') + '\n';
-      });
-
-      // Download CSV
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${rec.name}_pulse_synchrony.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }
-
-    function std(arr) {
-      const n = arr.length;
-      const mean = arr.reduce((a, b) => a + b, 0) / n;
-      return Math.sqrt(arr.map(x => (x - mean) ** 2).reduce((a, b) => a + b, 0) / n);
-    }
-
-    function calcRayleighR(phases) {
-      if (phases.length === 0) return 0;
-      let x = 0, y = 0;
-      for (const p of phases) {
-        x += Math.cos(p);
-        y += Math.sin(p);
-      }
-      return Math.sqrt(x ** 2 + y ** 2) / phases.length;
+    function calcRayleighR(angles) {
+      if (angles.length === 0) return 0;
+      const sumSin = angles.reduce((acc, a) => acc + Math.sin(a), 0);
+      const sumCos = angles.reduce((acc, a) => acc + Math.cos(a), 0);
+      return Math.sqrt(sumSin * sumSin + sumCos * sumCos) / angles.length;
     }
 
     function calcRayleighP(R, n) {
-      return Math.exp(-n * R * R);
+      if (n === 0) return 1;
+      const z = n * R * R;
+      return Math.exp(-z) * (1 + (2 * z - z * z) / (4 * n) - (24 * z - 132 * z * z + 76 * z * z * z - 9 * z * z * z * z) / (288 * n * n));
     }
 
-    function calcMeanAngle(phases) {
-      let x = 0, y = 0;
-      for (const p of phases) {
-        x += Math.cos(p);
-        y += Math.sin(p);
-      }
-      return Math.atan2(y, x);
+    function calcMeanAngle(angles) {
+      if (angles.length === 0) return 0;
+      const sumSin = angles.reduce((acc, a) => acc + Math.sin(a), 0);
+      const sumCos = angles.reduce((acc, a) => acc + Math.cos(a), 0);
+      return Math.atan2(sumSin / angles.length, sumCos / angles.length);
+    }
+
+    function std(values) {
+      if (values.length === 0) return 0;
+      const mean = values.reduce((a, b) => a + b) / values.length;
+      return Math.sqrt(values.reduce((acc, v) => acc + (v - mean) ** 2, 0) / values.length);
+    }
+
+    function exportCSV(recording) {
+      const { name, summary } = recording;
+      const {
+        data,
+        totalThrobs,
+        totalPeaks,
+        meanBPM,
+        rayleighR,
+        rayleighP,
+        PVL,
+        deltaStd,
+        meanAngle
+      } = summary;
+
+      let csv = `Recording Name,${name}\n`;
+      csv += `Total Throb Count,${totalThrobs}\n`;
+      csv += `Total R Peak Count,${totalPeaks}\n`;
+      csv += `Mean BPM,${meanBPM}\n`;
+      csv += `Rayleigh R,${rayleighR}\n`;
+      csv += `Rayleigh p-value,${rayleighP}\n`;
+      csv += `Phase Vector Length (PVL),${PVL}\n`;
+      csv += `Std Dev of Delta (throb – prior R),${deltaStd}\n`;
+      csv += `Mean Vector Angle (radians),${meanAngle}\n`;
+      csv += `Pulse Transit Time (PTT ms),${PTT}\n\n`;
+
+      csv += `Throb Time (ms),Prior R Peak Time (ms),Delta (ms),BPM at prior R,Phase (radians)\n`;
+      data.forEach(row => {
+        csv += `${row.throbTime.toFixed(2)},${row.priorPeakTime.toFixed(2) || ''},${row.delta.toFixed(2) || ''},${row.bpm || ''},${row.phase.toFixed(4) || ''}\n`;
+      });
+
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${name}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function listRecordings() {
+      const listDiv = document.getElementById('recordingsList');
+      listDiv.innerHTML = '';
+      recordings.forEach((rec, i) => {
+        const div = document.createElement('div');
+        div.textContent = `${rec.name} - Throbs: ${rec.summary.totalThrobs}, Mean BPM: ${rec.summary.meanBPM}`;
+        const btn = document.createElement('button');
+        btn.textContent = 'Download CSV';
+        btn.onclick = () => exportCSV(rec);
+        div.appendChild(btn);
+        listDiv.appendChild(div);
+      });
     }
 
     function toggleWaveform() {
-      drawECG();
+      if (!toggleDisplay.checked) ctx.clearRect(0, 0, canvasWidth, canvasHeight);
     }
   </script>
 </body>
