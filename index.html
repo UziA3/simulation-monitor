@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Migraine Throb Synchrony</title>
 <style>
-  /* ... (same styles as before, omitted here for brevity) ... */
   body {
     font-family: Arial, sans-serif;
     margin: 20px;
@@ -117,8 +116,8 @@
   const recordingsList = document.getElementById('recordingsList');
 
   const waveformDuration = 5000; // 5 seconds window shown on canvas
-  const sampleRate = 250; // Hz (samples per second)
-  const sampleInterval = 1000 / sampleRate; // ms per sample
+  const sampleRate = 250; // Hz
+  const sampleInterval = 1000 / sampleRate; // ms
 
   function ecgWaveform(tNorm) {
     const p = 0.1, pWidth = 0.07, pAmp = 0.15;
@@ -142,7 +141,6 @@
   let elapsedPauseTime = 0;
   let pauseStartTime = 0;
   let elapsed = 0;
-  let lastTimestamp = 0;
   let animationFrameId = 0;
 
   let waveformSamples = [];
@@ -189,6 +187,7 @@
       }
     }
 
+    // Remove old peaks outside the window (plus some margin)
     rPeaks = rPeaks.filter(rp => rp.time >= elapsed - waveformDuration - 1000);
   }
 
@@ -257,9 +256,7 @@
   }
 
   function updateTimer() {
-    if (!running) return;
-    if (paused) return;
-
+    if (!running || paused) return;
     elapsed = performance.now() - startTime - elapsedPauseTime;
     timerEl.textContent = formatTime(elapsed);
   }
@@ -278,7 +275,6 @@
       nextBpmChangeInterval = randomInterval();
     }
 
-    // Generate samples up to current elapsed
     let lastSampleTime = waveformSamples.length > 0 ? waveformSamples[waveformSamples.length - 1].time : -sampleInterval;
     while (lastSampleTime + sampleInterval < elapsed) {
       lastSampleTime += sampleInterval;
@@ -298,7 +294,6 @@
 
     running = true;
     paused = false;
-
     startTime = performance.now();
     elapsedPauseTime = 0;
     waveformSamples = [];
@@ -308,7 +303,6 @@
     bpmChangeTime = 0;
     nextBpmChangeInterval = randomInterval();
 
-    // Seed initial sample at time 0 to allow waveform to draw immediately
     waveformSamples.push({ time: 0, value: simulateEcgSample(0) });
 
     startBtn.disabled = true;
@@ -360,17 +354,105 @@
     throbs.push(elapsed);
   }
 
+  // Circular stats helper functions
+  function degToRad(deg) { return (deg * Math.PI) / 180; }
+  function radToDeg(rad) { return (rad * 180) / Math.PI; }
+  function meanAngle(angles) {
+    let x = 0, y = 0;
+    angles.forEach(a => {
+      x += Math.cos(a);
+      y += Math.sin(a);
+    });
+    return Math.atan2(y, x);
+  }
+  function vectorLength(angles) {
+    let x = 0, y = 0;
+    angles.forEach(a => {
+      x += Math.cos(a);
+      y += Math.sin(a);
+    });
+    x /= angles.length;
+    y /= angles.length;
+    return Math.sqrt(x * x + y * y);
+  }
+  function rayleighPValue(R, n) {
+    if (n === 0) return 1;
+    const z = n * R * R;
+    if (z > 100) return 0;
+    return Math.exp(-z) * (1 + (2 * z - z * z) / (4 * n) - (24 * z - 132 * z * z + 76 * z * z * z - 9 * z * z * z * z) / (288 * n * n));
+  }
+  function stdDev(arr) {
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    const variance = arr.reduce((a, b) => a + (b - mean) ** 2, 0) / arr.length;
+    return Math.sqrt(variance);
+  }
+
   function saveRecording() {
-    const recName = prompt('Enter recording name:', `Recording_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}`);
+    const recName = prompt('Enter recording name:', `Recording_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`);
     if (!recName) return;
 
-    // Compose CSV content (simplified example)
-    let csv = 'time_ms,value,rPeak,throb\n';
+    // Associate each throb with immediately preceding R peak (not nearest)
+    // For phase, find next R peak after preceding R peak, then calculate normalized phase
+    const throbData = throbs.map(throbTime => {
+      // Find preceding R peak
+      const precedingPeaks = rPeaks.filter(rp => rp.time <= throbTime);
+      if (precedingPeaks.length === 0) return null; // no preceding peak
+      const priorPeak = precedingPeaks[precedingPeaks.length - 1];
+      // Find next peak after priorPeak
+      const followingPeaks = rPeaks.filter(rp => rp.time > priorPeak.time);
+      const nextPeak = followingPeaks.length > 0 ? followingPeaks[0] : null;
 
-    waveformSamples.forEach(s => {
-      const isR = rPeaks.some(rp => Math.abs(rp.time - s.time) < sampleInterval / 2) ? 1 : 0;
-      const isThrob = throbs.some(t => Math.abs(t - s.time) < sampleInterval / 2) ? 1 : 0;
-      csv += `${s.time.toFixed(2)},${s.value.toFixed(4)},${isR},${isThrob}\n`;
+      const delta = throbTime - priorPeak.time; // ms
+      let phase = 0;
+      if (nextPeak) {
+        const interval = nextPeak.time - priorPeak.time;
+        if (interval > 0) {
+          phase = (delta / interval) * 2 * Math.PI;
+        }
+      }
+      return {
+        throbTime,
+        priorPeakTime: priorPeak.time,
+        delta,
+        bpm: priorPeak.bpm,
+        phase,
+      };
+    }).filter(x => x !== null);
+
+    // Mean BPM across all R peaks
+    const meanBpm = rPeaks.length > 0 ? rPeaks.reduce((a, r) => a + r.bpm, 0) / rPeaks.length : 0;
+
+    // Rayleigh test on phases
+    const phases = throbData.map(d => d.phase);
+    const R = vectorLength(phases);
+    const n = phases.length;
+    const pValueRaw = rayleighPValue(R, n);
+    const pValue = pValueRaw < 0.001 ? '<0.001' : pValueRaw.toFixed(3);
+
+    // PVL (phase vector length) = same as R here
+    const PVL = R;
+
+    // Mean vector angle in radians
+    const meanVecAngle = meanAngle(phases);
+
+    // Std dev of delta times (ms)
+    const deltaStdDev = throbData.length > 0 ? stdDev(throbData.map(d => d.delta)) : 0;
+
+    // CSV content generation
+    let csv = '';
+    csv += `Recording Name:,${recName}\n`;
+    csv += `Total Throb Count:,${throbData.length}\n`;
+    csv += `Total Pulse Peak Count:,${rPeaks.length}\n`;
+    csv += `Mean Pulse Rate (BPM):,${meanBpm.toFixed(2)}\n`;
+    csv += `Rayleigh R:,${R.toFixed(4)}\n`;
+    csv += `Rayleigh p-value:,${pValue}\n`;
+    csv += `PVL:,${PVL.toFixed(4)}\n`;
+    csv += `Std Dev of Deltas (ms):,${deltaStdDev.toFixed(2)}\n`;
+    csv += `Mean Vector Angle (rad):,${meanVecAngle.toFixed(4)}\n\n`;
+
+    csv += 'Throb Time (ms),Prior Pulse Peak (ms),Delta (ms),BPM at Peak,Phase (radians)\n';
+    throbData.forEach(d => {
+      csv += `${d.throbTime.toFixed(2)},${d.priorPeakTime.toFixed(2)},${d.delta.toFixed(2)},${d.bpm},${d.phase.toFixed(4)}\n`;
     });
 
     const blob = new Blob([csv], { type: 'text/csv' });
