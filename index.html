@@ -29,9 +29,6 @@
   <label><input type="checkbox" id="showMean" checked> Show Mean Phase</label>
   <label><input type="checkbox" id="showVar" checked> Show Phase Variance</label>
   <label><input type="checkbox" id="showRayleigh" checked> Show Rayleigh p-value</label>
-  <label><input type="checkbox" id="showPeakCount" checked> Show Peak Count</label>
-  <label><input type="checkbox" id="showThrobCount" checked> Show Throb Count</label>
-  <label><input type="checkbox" id="showPulseRate" checked> Show Median Pulse Rate (bpm)</label>
   <div id="metricsDisplay"></div>
 </div>
 
@@ -54,9 +51,6 @@
   const showMean = document.getElementById("showMean");
   const showVar = document.getElementById("showVar");
   const showRayleigh = document.getElementById("showRayleigh");
-  const showPeakCount = document.getElementById("showPeakCount");
-  const showThrobCount = document.getElementById("showThrobCount");
-  const showPulseRate = document.getElementById("showPulseRate");
 
   let pulseWave = [], throbs = [], recordingStartTime = null;
   let isRecording = false, isPaused = false, timerInterval = null, animationId;
@@ -76,8 +70,7 @@
       pulseWave.push({ time: now, value });
       lastSampleTime = now;
     }
-    // Keep pulseWave only from current recording start for consistency
-    pulseWave = pulseWave.filter(p => p.time >= recordingStartTime);
+    pulseWave = pulseWave.filter(p => p.time >= performance.now() - DISPLAY_DURATION);
   }
 
   function draw() {
@@ -211,34 +204,13 @@
     return { plv, mean, variance, rayleigh };
   }
 
-  function calculateMedianPulseRate() {
-    const peaks = findPeaks();
-    if (peaks.length < 2) return null;
-    const intervals = [];
-    for (let i = 1; i < peaks.length; i++) {
-      intervals.push(peaks[i] - peaks[i - 1]);
-    }
-    intervals.sort((a,b) => a-b);
-    const mid = Math.floor(intervals.length / 2);
-    const medianInterval = intervals.length % 2 === 0 ? (intervals[mid-1] + intervals[mid]) / 2 : intervals[mid];
-    const medianBPM = 60000 / medianInterval;
-    return medianBPM;
-  }
-
   function updateMetricsDisplay() {
     const stats = calculatePLV();
-    const peaks = findPeaks();
-    const medianBPM = calculateMedianPulseRate();
-
     const lines = [];
     if (showPLV.checked) lines.push(`PLV: ${stats.plv.toFixed(4)}`);
     if (showMean.checked) lines.push(`Mean Phase: ${stats.mean !== null ? stats.mean.toFixed(4) : "N/A"}`);
     if (showVar.checked) lines.push(`Phase Variance: ${stats.variance !== null ? stats.variance.toFixed(4) : "N/A"}`);
     if (showRayleigh.checked) lines.push(`Rayleigh p-value: ${stats.rayleigh !== null ? stats.rayleigh.toExponential(4) : "N/A"}`);
-    if (showPeakCount.checked) lines.push(`Total Peak Count: ${peaks.length}`);
-    if (showThrobCount.checked) lines.push(`Total Throb Count: ${throbs.length}`);
-    if (showPulseRate.checked) lines.push(`Median Pulse Rate (bpm): ${medianBPM !== null ? medianBPM.toFixed(2) : "N/A"}`);
-
     metricsDisplay.innerHTML = lines.join("<br>");
   }
 
@@ -251,7 +223,6 @@
 
   startBtn.onclick = () => {
     throbs = [];
-    pulseWave = [];
     recordingStartTime = performance.now();
     isRecording = true;
     isPaused = false;
@@ -261,7 +232,6 @@
     throbBtn.disabled = false;
     timerInterval = setInterval(updateTimer, 100);
     draw();
-    updateMetricsDisplay();
   };
 
   pauseBtn.onclick = () => {
@@ -308,19 +278,12 @@
       t.phase !== null ? t.phase.toFixed(4) : "N/A"
     ]);
     const stats = calculatePLV();
-    const peaks = findPeaks();
-    const medianBPM = calculateMedianPulseRate();
-
     let csv = header.join(",") + "\n";
     rows.forEach(row => csv += row.join(",") + "\n");
-
     csv += `\nPLV:,${stats.plv.toFixed(4)}\n`;
     csv += `Mean Phase (rad):,${stats.mean !== null ? stats.mean.toFixed(4) : "N/A"}\n`;
     csv += `Phase Variance:,${stats.variance !== null ? stats.variance.toFixed(4) : "N/A"}\n`;
     csv += `Rayleigh p-value:,${stats.rayleigh !== null ? stats.rayleigh.toExponential(4) : "N/A"}\n`;
-    csv += `Total Peak Count:,${peaks.length}\n`;
-    csv += `Total Throb Count:,${throbs.length}\n`;
-    csv += `Median Pulse Rate (bpm):,${medianBPM !== null ? medianBPM.toFixed(2) : "N/A"}\n`;
 
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
