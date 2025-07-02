@@ -52,28 +52,27 @@
   let animationId = null;
   let lastSampleTime = 0;
 
-  // Visibility toggle: stats + markings
+  // Toggle flag for showing stats and markings
   let allVisible = true;
 
   // Constants for waveform simulation
-  const DISPLAY_DURATION = 20000; // ms (20 seconds)
-  const SAMPLE_INTERVAL = 20; // ms
+  const DISPLAY_DURATION = 20000; // 20 seconds window on canvas
+  const SAMPLE_INTERVAL = 20; // 20 ms per sample
   const BASELINE = 100;
   const AMPLITUDE = 50;
-  const FREQ = 1.2;
+  const FREQ = 1.2; // frequency in Hz (approx 72 bpm)
 
   // Simulate waveform by generating sine wave samples
   function simulatePulse() {
     const now = performance.now();
     if (now - lastSampleTime >= SAMPLE_INTERVAL) {
       const t = now / 1000;
-      // Simulate a sinusoidal waveform with some noise
       const noise = (Math.random() - 0.5) * 5;
       const value = BASELINE + AMPLITUDE * Math.sin(2 * Math.PI * FREQ * t) + noise;
       pulseWave.push({ time: now, value });
       lastSampleTime = now;
     }
-    // Keep only recent samples (last 5 minutes)
+    // Keep last 5 minutes data max
     const cutoff = performance.now() - 5 * 60 * 1000;
     pulseWave = pulseWave.filter(p => p.time >= cutoff);
   }
@@ -145,7 +144,7 @@
     return null;
   }
 
-  // Detect peaks by local maxima (improved: check neighbors)
+  // Detect peaks by local maxima
   function findPeaks() {
     const peaks = [];
     const values = pulseWave.map(p => p.value);
@@ -161,9 +160,9 @@
   function calculatePhase(t) {
     const peaks = findPeaks();
     if (peaks.length < 2) return null;
-    let prevPeak = null, nextPeak = null;
 
-    // Find surrounding peaks
+    // Find peaks surrounding time t
+    let prevPeak = null, nextPeak = null;
     for (let i = 0; i < peaks.length - 1; i++) {
       if (peaks[i] <= t && peaks[i + 1] > t) {
         prevPeak = peaks[i];
@@ -171,6 +170,7 @@
         break;
       }
     }
+
     if (prevPeak === null || nextPeak === null) return null;
 
     const phase = 2 * Math.PI * (t - prevPeak) / (nextPeak - prevPeak);
@@ -219,7 +219,7 @@
 
   // Calculate PLV and related stats from throbs
   function calculatePLV() {
-    // Assign phases to each throb on the fly:
+    // Assign phases to each throb:
     throbs.forEach(throb => {
       throb.phase = calculatePhase(throb.time);
     });
@@ -290,25 +290,18 @@
     const elapsed = performance.now() - recordingStartTime;
     const mins = Math.floor(elapsed / 60000);
     const secs = Math.floor((elapsed % 60000) / 1000);
-    timerDisplay.textContent = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    timerDisplay.textContent = `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   }
 
-  // Toggle all stats & markings on/off button
-  toggleAllBtn.onclick = () => {
-    allVisible = !allVisible;
-    toggleAllBtn.textContent = allVisible
-      ? "Hide All Stats & Markings"
-      : "Show All Stats & Markings";
-    updateMetricsDisplay();
-  };
-
-  // Start recording
-  startBtn.onclick = () => {
-    pulseWave = [];
-    throbs = [];
-    recordingStartTime = performance.now();
+  // Button event handlers
+  startBtn.addEventListener("click", () => {
+    if (isRecording) return;
     isRecording = true;
     isPaused = false;
+    recordingStartTime = performance.now();
+    throbs = [];
+    pulseWave = [];
+    lastSampleTime = 0;
 
     startBtn.disabled = true;
     pauseBtn.disabled = false;
@@ -316,42 +309,37 @@
     stopBtn.disabled = false;
     throbBtn.disabled = false;
 
-    updateMetricsDisplay();
-    updateTimer();
     timerInterval = setInterval(() => {
-      updateTimer();
-      updateMetricsDisplay();
+      if (!isPaused) {
+        updateTimer();
+        updateMetricsDisplay();
+      }
     }, 500);
-    draw();
-  };
 
-  // Pause recording
-  pauseBtn.onclick = () => {
+    draw();
+  });
+
+  pauseBtn.addEventListener("click", () => {
+    if (!isRecording || isPaused) return;
     isPaused = true;
     pauseBtn.disabled = true;
     resumeBtn.disabled = false;
-    throbBtn.disabled = true;
-    if (animationId) cancelAnimationFrame(animationId);
-    if (timerInterval) clearInterval(timerInterval);
-  };
+  });
 
-  // Resume recording
-  resumeBtn.onclick = () => {
+  resumeBtn.addEventListener("click", () => {
+    if (!isRecording || !isPaused) return;
     isPaused = false;
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
-    throbBtn.disabled = false;
-    timerInterval = setInterval(() => {
-      updateTimer();
-      updateMetricsDisplay();
-    }, 500);
     draw();
-  };
+  });
 
-  // Stop recording
-  stopBtn.onclick = () => {
+  stopBtn.addEventListener("click", () => {
+    if (!isRecording) return;
     isRecording = false;
     isPaused = false;
+    cancelAnimationFrame(animationId);
+    clearInterval(timerInterval);
 
     startBtn.disabled = false;
     pauseBtn.disabled = true;
@@ -359,20 +347,25 @@
     stopBtn.disabled = true;
     throbBtn.disabled = true;
 
-    if (animationId) cancelAnimationFrame(animationId);
-    if (timerInterval) clearInterval(timerInterval);
-
-    updateMetricsDisplay();
     updateTimer();
-  };
-
-  // Mark a throb at current time
-  throbBtn.onclick = () => {
-    if (!isRecording || isPaused) return;
-    const now = performance.now();
-    throbs.push({ time: now, phase: null });
     updateMetricsDisplay();
-  };
+  });
+
+  throbBtn.addEventListener("click", () => {
+    if (!isRecording || isPaused) return;
+    const t = performance.now();
+    throbs.push({ time: t });
+  });
+
+  toggleAllBtn.addEventListener("click", () => {
+    allVisible = !allVisible;
+    toggleAllBtn.textContent = allVisible ? "Hide All Stats & Markings" : "Show All Stats & Markings";
+    if (!allVisible) {
+      metricsDisplay.innerHTML = "";
+    } else {
+      updateMetricsDisplay();
+    }
+  });
 
 })();
 </script>
