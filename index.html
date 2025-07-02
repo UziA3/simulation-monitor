@@ -262,11 +262,11 @@
 
     if (currentStats) {
       const lines = [
-        Throbs: ${currentStats.throbCount},
-        Mean Phase (rad): ${formatFixed(currentStats.meanPhase)},
-        PLV: ${formatFixed(currentStats.plv)},
-        Rayleigh p-value: ${formatFixed(currentStats.pValue,5)},
-        Mean Pulse Rate (bpm): ${formatFixed(currentStats.meanPulseRate)}
+        `Throbs: ${currentStats.throbCount}`,
+        `Mean Phase (rad): ${formatFixed(currentStats.meanPhase)}`,
+        `PLV: ${formatFixed(currentStats.plv)}`,
+        `Rayleigh p-value: ${formatFixed(currentStats.pValue,5)}`,
+        `Mean Pulse Rate (bpm): ${formatFixed(currentStats.meanPulseRate)}`
       ];
       for (let i = 0; i < lines.length; i++) {
         ctx.fillText(lines[i], 10, 10 + i * 20);
@@ -303,7 +303,7 @@
     // Add to dropdown
     const opt = document.createElement('option');
     opt.value = savedRecordings.length - 1;
-    opt.textContent = Recording ${savedRecordings.length} (${recording.timestamp});
+    opt.textContent = `Recording ${savedRecordings.length} (${recording.timestamp})`;
     savedRecordingsSelect.appendChild(opt);
 
     alert('Recording saved.');
@@ -338,7 +338,7 @@
 
     // Display in text area
     const statsText =
---- Recording Stats ---
+`--- Recording Stats ---
 Timestamp: ${rec.timestamp}
 
 Number of Throbs: ${rec.throbs.length}
@@ -354,9 +354,9 @@ ${rec.throbs.map((t,i) => {
   // Calculate phase for each throb again for CSV
   let phaseStr = 'N/A';
   if (phases[i] !== undefined) phaseStr = formatFixed(phases[i]);
-  return ${i+1},${formatFixed(t.timeMs,0)},${formatFixed(t.timeMs/1000)},${phaseStr},${formatFixed(t.value)};
+  return `${i+1},${formatFixed(t.timeMs,0)},${formatFixed(t.timeMs/1000)},${phaseStr},${formatFixed(t.value)}`;
 }).join('\n')}
-;
+`;
 
     statsPre.textContent = statsText;
     statsPre.style.display = 'block';
@@ -382,7 +382,7 @@ ${rec.throbs.map((t,i) => {
     rec.throbs.forEach((t, i) => {
       let phaseStr = 'N/A';
       if (phases[i] !== undefined) phaseStr = phases[i].toFixed(5);
-      csv += ${i+1},${t.timeMs.toFixed(0)},${(t.timeMs/1000).toFixed(3)},${phaseStr},${t.value.toFixed(5)}\n;
+      csv += `${i+1},${t.timeMs.toFixed(0)},${(t.timeMs/1000).toFixed(3)},${phaseStr},${t.value.toFixed(5)}\n`;
     });
 
     // Add overall stats summary
@@ -390,19 +390,19 @@ ${rec.throbs.map((t,i) => {
     const pValue = rayleighTest(phases);
     const meanPulseRate = calculateMeanPulseRate(rec.peaks);
 
-    csv += \nOverall Statistics\n;
-    csv += Number of Throbs,${rec.throbs.length}\n;
-    csv += Mean Phase (rad),${formatFixed(meanPhase)}\n;
-    csv += Phase Locking Value,${formatFixed(plv)}\n;
-    csv += Rayleigh p-value,${formatFixed(pValue,5)}\n;
-    csv += Mean Pulse Rate (bpm),${formatFixed(meanPulseRate)}\n;
+    csv += `\nOverall Statistics\n`;
+    csv += `Number of Throbs,${rec.throbs.length}\n`;
+    csv += `Mean Phase (rad),${formatFixed(meanPhase)}\n`;
+    csv += `Phase Locking Value,${formatFixed(plv)}\n`;
+    csv += `Rayleigh p-value,${formatFixed(pValue,5)}\n`;
+    csv += `Mean Pulse Rate (bpm),${formatFixed(meanPulseRate)}\n`;
 
     // Download CSV
     const blob = new Blob([csv], {type: 'text/csv'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = recording_${idx+1}_stats.csv;
+    a.download = `recording_${idx+1}_stats.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
