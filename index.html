@@ -1,9 +1,9 @@
-<!-- Save this as pulse-throb-simulator.html -->
+<!-- Save as pulse-throb-simulator-debug.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Pulse Throb Simulator with PLV</title>
+  <title>Pulse Throb Simulator with PLV (Debug)</title>
   <style>
     body { font-family: sans-serif; margin: 20px; }
     canvas { border: 1px solid #ccc; margin-bottom: 10px; }
@@ -43,29 +43,28 @@
   let animationId;
   let lastSampleTime = 0;
 
-  const DISPLAY_DURATION = 20000; // 20s
-  const SAMPLE_INTERVAL = 20;     // ms
+  const DISPLAY_DURATION = 20000; // 20s display window
+  const SAMPLE_INTERVAL = 20;     // ms sampling interval
   const WAVE_BASELINE = 100;
   const WAVE_AMPLITUDE = 50;
-  const WAVE_FREQ = 1.2 + Math.random() * 0.5; // ~60-100bpm
+  const WAVE_FREQ = 1.2 + Math.random() * 0.5; // ~72-102 bpm
 
   function simulatePulse() {
     const now = performance.now();
     if (now - lastSampleTime >= SAMPLE_INTERVAL) {
-      const t = (now - recordingStartTime) / 1000; // relative time in seconds
+      const t = now / 1000;
       const value = WAVE_BASELINE + WAVE_AMPLITUDE * Math.sin(2 * Math.PI * WAVE_FREQ * t);
-      pulseWave.push({ time: now - recordingStartTime, value }); // store time relative to start
+      pulseWave.push({ time: now, value });
       lastSampleTime = now;
     }
-    // Keep only last DISPLAY_DURATION ms of samples
-    pulseWave = pulseWave.filter(p => p.time >= (performance.now() - recordingStartTime) - DISPLAY_DURATION);
+    pulseWave = pulseWave.filter(p => p.time >= now - DISPLAY_DURATION);
   }
 
   function draw() {
     simulatePulse();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const nowRel = performance.now() - recordingStartTime;
-    const start = nowRel - DISPLAY_DURATION;
+    const now = performance.now();
+    const start = now - DISPLAY_DURATION;
 
     ctx.beginPath();
     pulseWave.forEach((p, i) => {
@@ -79,7 +78,7 @@
 
     // Draw throbs
     throbs.forEach(throb => {
-      if (throb.time < start || throb.time > nowRel) return;
+      if (throb.time < start || throb.time > now) return;
       const val = interpolatePulseValue(throb.time);
       if (val === null) return;
       const x = ((throb.time - start) / DISPLAY_DURATION) * canvas.width;
@@ -107,9 +106,10 @@
     return null;
   }
 
+  // Peak detection with smaller window (1) for sensitivity & console log
   function findPeaks() {
     const peaks = [];
-    const window = 2;
+    const window = 1;
     for (let i = window; i < pulseWave.length - window; i++) {
       const cur = pulseWave[i].value;
       let isPeak = true;
@@ -121,32 +121,39 @@
       }
       if (isPeak) peaks.push(pulseWave[i].time);
     }
+    console.log("Peaks found:", peaks.map(p => (p - recordingStartTime).toFixed(1)));
     return peaks;
   }
 
-  // Fix calculatePhase: return phase 0 if before first peak, phase 2π if after last peak, and interpolate normally otherwise
+  // Safer phase calc with fallback + debug logs
   function calculatePhase(t) {
     const peaks = findPeaks();
-    if (peaks.length < 2) return null; // Need at least 2 peaks to compute phase
-
-    // If before first peak, assign phase near 0
-    if (t <= peaks[0]) {
+    if (peaks.length < 2) {
+      console.warn("Not enough peaks to calculate phase.");
       return 0;
     }
-    // If after last peak, assign phase near 2π
+
+    if (t <= peaks[0]) {
+      console.log(`Phase at t=${(t - recordingStartTime).toFixed(1)} before first peak: 0`);
+      return 0;
+    }
     if (t >= peaks[peaks.length - 1]) {
+      console.log(`Phase at t=${(t - recordingStartTime).toFixed(1)} after last peak: 2π`);
       return 2 * Math.PI;
     }
 
-    // Find interval between two peaks containing t
     for (let i = 0; i < peaks.length - 1; i++) {
-      if (peaks[i] <= t && peaks[i + 1] > t) {
+      if (peaks[i] <= t && t < peaks[i + 1]) {
         const prev = peaks[i];
         const next = peaks[i + 1];
-        return 2 * Math.PI * (t - prev) / (next - prev);
+        const phase = 2 * Math.PI * (t - prev) / (next - prev);
+        console.log(`Phase at t=${(t - recordingStartTime).toFixed(1)} between peaks: ${phase.toFixed(3)}`);
+        return phase;
       }
     }
-    return null; // fallback
+
+    console.warn("Failed to calculate phase, returning 0.");
+    return 0;
   }
 
   function calculatePLV() {
@@ -175,10 +182,10 @@
     recordingStartTime = performance.now();
     isRecording = true;
     isPaused = false;
-    lastSampleTime = recordingStartTime;
     startBtn.disabled = true;
     pauseBtn.disabled = false;
     stopBtn.disabled = false;
+    resumeBtn.disabled = true;
     throbBtn.disabled = false;
     timerInterval = setInterval(updateTimer, 100);
     draw();
@@ -213,18 +220,22 @@
   };
 
   throbBtn.onclick = () => {
-    const t = performance.now() - recordingStartTime; // relative time
+    const t = performance.now();
+    if (!recordingStartTime) {
+      console.warn("Start recording first.");
+      return;
+    }
+    const relativeTime = t - recordingStartTime;
     const phase = calculatePhase(t);
     throbs.push({ time: t, phase });
-    // Optional: console.log for debug
-    console.log(`Throb at t=${t.toFixed(1)} ms, phase=${phase !== null ? phase.toFixed(3) : 'null'}`);
+    console.log(`Throb at t=${relativeTime.toFixed(1)} ms, phase=${phase.toFixed(3)}`);
   };
 
   function exportCSV() {
     const header = ["Throb #", "Time (ms)", "Phase (radians)"];
     const rows = throbs.map((t, i) => [
       i + 1,
-      t.time.toFixed(1),
+      (t.time - recordingStartTime).toFixed(1),
       t.phase !== null ? t.phase.toFixed(4) : "N/A"
     ]);
     const plv = calculatePLV();
