@@ -2,36 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Pulse Throb Simulator with Toggle Stats</title>
+  <title>Pulse Throb Simulator with PLV</title>
   <style>
     body { font-family: sans-serif; margin: 20px; }
     canvas { border: 1px solid #ccc; margin-bottom: 10px; }
-    button, label { margin: 5px; }
-    .stats { margin-top: 10px; }
+    button { margin: 5px; }
   </style>
 </head>
 <body>
 
 <h1>Pulse Throb Monitor (Simulated)</h1>
-
 <canvas id="canvas" width="800" height="200"></canvas><br>
-
 <button id="startBtn">Start</button>
 <button id="pauseBtn" disabled>Pause</button>
 <button id="resumeBtn" disabled>Resume</button>
 <button id="stopBtn" disabled>Stop</button>
 <button id="throbBtn" disabled>Mark Throb</button>
-
 <div>Timer: <span id="timer">00:00</span></div>
-
-<div class="stats">
-  <label><input type="checkbox" id="showPLV" checked> Show PLV</label>
-  <label><input type="checkbox" id="showMean" checked> Show Mean Phase</label>
-  <label><input type="checkbox" id="showVar" checked> Show Phase Variance</label>
-  <label><input type="checkbox" id="showRayleigh" checked> Show Rayleigh p-value</label>
-  <div id="metricsDisplay"></div>
-</div>
-
 <ul id="recordingsList"></ul>
 
 <script>
@@ -45,22 +32,21 @@
   const throbBtn = document.getElementById("throbBtn");
   const timerDisplay = document.getElementById("timer");
   const recordingsList = document.getElementById("recordingsList");
-  const metricsDisplay = document.getElementById("metricsDisplay");
 
-  const showPLV = document.getElementById("showPLV");
-  const showMean = document.getElementById("showMean");
-  const showVar = document.getElementById("showVar");
-  const showRayleigh = document.getElementById("showRayleigh");
-
-  let pulseWave = [], throbs = [], recordingStartTime = null;
-  let isRecording = false, isPaused = false, timerInterval = null, animationId;
+  let pulseWave = [];
+  let throbs = [];
+  let recordingStartTime = null;
+  let isRecording = false;
+  let isPaused = false;
+  let timerInterval = null;
+  let animationId;
   let lastSampleTime = 0;
 
-  const DISPLAY_DURATION = 20000;
-  const SAMPLE_INTERVAL = 20;
+  const DISPLAY_DURATION = 20000; // 20s
+  const SAMPLE_INTERVAL = 20;     // ms
   const WAVE_BASELINE = 100;
   const WAVE_AMPLITUDE = 50;
-  const WAVE_FREQ = 1.2 + Math.random() * 0.5;
+  const WAVE_FREQ = 1.2 + Math.random() * 0.5; // ~60-100bpm
 
   function simulatePulse() {
     const now = performance.now();
@@ -189,22 +175,14 @@
     return { plv, mean, variance, rayleigh };
   }
 
-  function updateMetricsDisplay() {
-    const stats = calculatePLV();
-    const lines = [];
-    if (showPLV.checked) lines.push(`PLV: ${stats.plv.toFixed(4)}`);
-    if (showMean.checked) lines.push(`Mean Phase: ${stats.mean !== null ? stats.mean.toFixed(4) : "N/A"}`);
-    if (showVar.checked) lines.push(`Phase Variance: ${stats.variance !== null ? stats.variance.toFixed(4) : "N/A"}`);
-    if (showRayleigh.checked) lines.push(`Rayleigh p-value: ${stats.rayleigh !== null ? stats.rayleigh.toExponential(4) : "N/A"}`);
-    metricsDisplay.innerHTML = lines.join("<br>");
-  }
-
   function updateTimer() {
     const elapsed = performance.now() - recordingStartTime;
     const mins = Math.floor(elapsed / 60000);
     const secs = Math.floor((elapsed % 60000) / 1000);
     timerDisplay.textContent = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   }
+
+  // ---------- Button Logic ----------
 
   startBtn.onclick = () => {
     throbs = [];
@@ -245,14 +223,12 @@
     stopBtn.disabled = true;
     throbBtn.disabled = true;
     exportCSV();
-    metricsDisplay.innerHTML = "";
   };
 
   throbBtn.onclick = () => {
     const t = performance.now();
     const phase = calculatePhase(t);
     throbs.push({ time: t, phase });
-    updateMetricsDisplay();
   };
 
   function exportCSV() {
