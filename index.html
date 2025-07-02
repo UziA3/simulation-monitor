@@ -1,3 +1,5 @@
+<!-- Save this as index.html and open in any browser -->
+<!-- Updated: BPM randomization & consistent throb-to-previous-peak deltas -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -31,39 +33,30 @@
 </style>
 </head>
 <body>
-  <h2>Migraine Throb Temporal Synchrony Recorder</h2>
-  <canvas id="waveformCanvas" width="800" height="230"></canvas>
-
-  <div>
-    <button id="startBtn">Start</button>
-    <button id="pauseBtn" disabled>Pause</button>
-    <button id="stopBtn" disabled>Stop & Save</button>
-    <button id="markBtn" disabled>Mark Throb</button>
-    <button id="toggleShowBtn">Hide Waveform</button>
-  </div>
-
-  <div>
-    <label>
-      Recording Name:
-      <input type="text" id="recordingName" placeholder="Enter a name for this recording" />
-    </label>
-  </div>
-
-  <h3>Recordings</h3>
-  <div id="recordingsList">
-    <p>No recordings yet.</p>
-  </div>
+<h2>Migraine Throb Temporal Synchrony Recorder</h2>
+<canvas id="waveformCanvas" width="800" height="230"></canvas>
+<div>
+  <button id="startBtn">Start</button>
+  <button id="pauseBtn" disabled>Pause</button>
+  <button id="stopBtn" disabled>Stop & Save</button>
+  <button id="markBtn" disabled>Mark Throb</button>
+  <button id="toggleShowBtn">Hide Waveform</button>
+</div>
+<div>
+  <label>
+    Recording Name:
+    <input type="text" id="recordingName" placeholder="Enter a name for this recording" />
+  </label>
+</div>
+<h3>Recordings</h3>
+<div id="recordingsList"><p>No recordings yet.</p></div>
 
 <script>
+// BEGIN JS BLOCK
 (() => {
-  // Constants
-  const BPM_MIN = 60;
-  const BPM_MAX = 100;
-  const MS_PER_MIN = 60000;
-
-  // Elements
   const canvas = document.getElementById("waveformCanvas");
   const ctx = canvas.getContext("2d");
+
   const startBtn = document.getElementById("startBtn");
   const pauseBtn = document.getElementById("pauseBtn");
   const stopBtn = document.getElementById("stopBtn");
@@ -72,68 +65,39 @@
   const recordingNameInput = document.getElementById("recordingName");
   const recordingsListDiv = document.getElementById("recordingsList");
 
-  // State variables
-  let bpm = BPM_MIN;
-  let isRecording = false;
-  let isPaused = false;
-  let showWaveform = true;
-  let timer = 0; // ms elapsed in current recording
-  let throbs = [];
-  let pulsePeaks = [];
-  let recordings = [];
-  let intervalId = null;
-  let startTime = null;
-  let pauseStart = null;
-
+  const BPM_MIN = 60, BPM_MAX = 100;
+  const MS_PER_MIN = 60000;
   const canvasWidth = canvas.width;
   const canvasHeight = canvas.height;
   const waveformHeight = 150;
   const timerHeight = 30;
 
-  // Utility Functions
+  let isRecording = false, isPaused = false, showWaveform = true;
+  let timer = 0;
+  let throbs = [], pulsePeaks = [], recordings = [];
+  let intervalId = null, startTime = null, pauseStart = null;
+  let bpm = 75; // start value
+  let bpmChangeTime = 0;
+  let nextBpmChange = 0;
+
   function formatTime(ms) {
     const totalSeconds = Math.floor(ms / 1000);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     const milliseconds = ms % 1000;
-    return `${pad(minutes, 2)}:${pad(seconds, 2)}.${pad(milliseconds, 3)}`;
-  }
-  function pad(n, z) {
-    return ("00" + n).slice(-z);
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
   }
 
-  // Rayleigh Test (for uniformity of phase differences)
-  function rayleighTest(phases) {
-    const n = phases.length;
-    if (n === 0) return { pValue: 1, r: 0 };
-    let sumSin = 0, sumCos = 0;
-    for (const phase of phases) {
-      sumSin += Math.sin(phase);
-      sumCos += Math.cos(phase);
-    }
-    const R = Math.sqrt(sumSin * sumSin + sumCos * sumCos) / n;
-    const Z = n * R * R;
-    const pValue = Math.exp(-Z) * (1 + (2 * Z - Z * Z) / (4 * n) - (24 * Z - 132 * Z * Z + 76 * Z * Z * Z - 9 * Z * Z * Z * Z) / (288 * n * n));
-    return { pValue: Math.min(1, pValue), r: R };
+  function getRandomBPM() {
+    return BPM_MIN + Math.random() * (BPM_MAX - BPM_MIN);
   }
 
-  function phaseVectorLength(phases) {
-    if (phases.length === 0) return 0;
-    let sumSin = 0, sumCos = 0;
-    for (const p of phases) {
-      sumSin += Math.sin(p);
-      sumCos += Math.cos(p);
-    }
-    return Math.sqrt(sumSin * sumSin + sumCos * sumCos) / phases.length;
+  function scheduleNextBpmChange() {
+    nextBpmChange = 3000 + Math.random() * 4000; // 3–7 seconds
+    bpmChangeTime = timer + nextBpmChange;
+    bpm = getRandomBPM();
   }
 
-  function timeDiffToPhase(diffMs, bpm) {
-    const period = MS_PER_MIN / bpm;
-    return ((diffMs % period) / period) * 2 * Math.PI;
-  }
-
-  // Arterial pulse waveform function approximation:
-  // Simulate a sharper systolic peak and slower diastolic decay with a skewed function.
   function arterialPulseWave(phase) {
     const riseEnd = 0.3 * 2 * Math.PI;
     if (phase < riseEnd) {
@@ -143,13 +107,11 @@
     }
   }
 
-  // Drawing function
   function draw() {
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-
     if (!showWaveform) {
-      ctx.font = "20px Arial";
       ctx.fillStyle = "black";
+      ctx.font = "20px Arial";
       ctx.fillText(formatTime(timer), 10, waveformHeight + timerHeight);
       return;
     }
@@ -164,7 +126,6 @@
     ctx.lineWidth = 2;
     ctx.beginPath();
 
-    // Use current bpm (variable) to calculate pulse period
     const period = MS_PER_MIN / bpm;
     const windowDuration = Math.min(timer, 10000);
     const startTimeWindow = timer - windowDuration;
@@ -176,16 +137,14 @@
       const phase = ((t % period) / period) * 2 * Math.PI;
       const yValue = arterialPulseWave(phase);
       const y = waveformHeight / 2 - yValue * (waveformHeight / 3);
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
     ctx.stroke();
 
     ctx.strokeStyle = "red";
-    ctx.lineWidth = 1.5;
-    pulsePeaks.forEach((peak) => {
-      if (peak < startTimeWindow || peak > timer) return;
-      const x = (peak - startTimeWindow) * pixelsPerMs;
+    pulsePeaks.forEach(p => {
+      if (p < startTimeWindow || p > timer) return;
+      const x = (p - startTimeWindow) * pixelsPerMs;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, waveformHeight);
@@ -194,10 +153,9 @@
 
     ctx.strokeStyle = "green";
     ctx.fillStyle = "green";
-    ctx.lineWidth = 2;
-    throbs.forEach((throb) => {
-      if (throb < startTimeWindow || throb > timer) return;
-      const x = (throb - startTimeWindow) * pixelsPerMs;
+    throbs.forEach(t => {
+      if (t < startTimeWindow || t > timer) return;
+      const x = (t - startTimeWindow) * pixelsPerMs;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, waveformHeight);
@@ -207,31 +165,22 @@
       ctx.fill();
     });
 
-    ctx.font = "20px Arial";
     ctx.fillStyle = "black";
+    ctx.font = "20px Arial";
     ctx.fillText(formatTime(timer), 10, waveformHeight + timerHeight);
   }
 
-  // Update function (timer, pulse peaks, bpm changes)
   function update() {
     if (!isRecording || isPaused) return;
     const elapsed = Date.now() - startTime;
     timer = elapsed;
 
-    // Dynamically change bpm between 60 and 100 over a 30-second sine wave cycle
-    const bpmCyclePeriod = 30000; // ms for a full bpm oscillation
-    bpm = BPM_MIN + (BPM_MAX - BPM_MIN) / 2 * (1 + Math.sin((2 * Math.PI * timer) / bpmCyclePeriod));
+    if (timer >= bpmChangeTime) scheduleNextBpmChange();
 
-    // Update pulse peaks: keep adding next peaks as timer progresses,
-    // with variable period depending on bpm at that time.
-    // We'll generate peaks based on previous peak + period at that time.
     while (pulsePeaks.length === 0 || pulsePeaks[pulsePeaks.length - 1] < timer) {
       const lastPeak = pulsePeaks.length === 0 ? 0 : pulsePeaks[pulsePeaks.length - 1];
-
-      // Calculate bpm at lastPeak time for accurate peak spacing
-      const bpmAtLastPeak = BPM_MIN + (BPM_MAX - BPM_MIN) / 2 * (1 + Math.sin((2 * Math.PI * lastPeak) / bpmCyclePeriod));
+      const bpmAtLastPeak = bpm;
       const periodMs = MS_PER_MIN / bpmAtLastPeak;
-
       const nextPeak = lastPeak + periodMs;
       if (nextPeak <= timer) pulsePeaks.push(nextPeak);
       else break;
@@ -240,11 +189,11 @@
     draw();
   }
 
-  // Timer interval
   function startInterval() {
     if (intervalId) clearInterval(intervalId);
     intervalId = setInterval(update, 30);
   }
+
   function stopInterval() {
     if (intervalId) {
       clearInterval(intervalId);
@@ -252,29 +201,26 @@
     }
   }
 
-  // Button Handlers
   startBtn.onclick = () => {
-    if (!isRecording) {
-      if (!recordingNameInput.value.trim()) {
-        alert("Please enter a recording name before starting.");
-        return;
-      }
-      bpm = BPM_MIN; // Start at min bpm
-      isRecording = true;
-      isPaused = false;
-      timer = 0;
-      throbs = [];
-      pulsePeaks = [];
-      startTime = Date.now();
-      pauseStart = null;
-      markBtn.disabled = false;
-      pauseBtn.disabled = false;
-      stopBtn.disabled = false;
-      startBtn.disabled = true;
-      recordingNameInput.disabled = true;
-      startInterval();
-      draw();
+    if (!recordingNameInput.value.trim()) {
+      alert("Please enter a recording name before starting.");
+      return;
     }
+    bpm = getRandomBPM();
+    scheduleNextBpmChange();
+    isRecording = true;
+    isPaused = false;
+    timer = 0;
+    throbs = [];
+    pulsePeaks = [];
+    startTime = Date.now();
+    markBtn.disabled = false;
+    pauseBtn.disabled = false;
+    stopBtn.disabled = false;
+    startBtn.disabled = true;
+    recordingNameInput.disabled = true;
+    startInterval();
+    draw();
   };
 
   pauseBtn.onclick = () => {
@@ -288,7 +234,6 @@
       isPaused = false;
       const pausedDuration = Date.now() - pauseStart;
       startTime += pausedDuration;
-      pauseStart = null;
       pauseBtn.textContent = "Pause";
       startInterval();
     }
@@ -306,60 +251,45 @@
     recordingNameInput.disabled = false;
 
     if (timer < 1000) {
-      alert("Recording too short, please record longer than 1 second.");
+      alert("Recording too short.");
       return;
     }
 
-    // Calculate temporal synchrony stats
-    const phases = [];
-    const deltas = []; // store delta time differences in ms
-    for (const throbTime of throbs) {
-      let closestPeak = null;
-      let minDiff = Infinity;
-      for (const peak of pulsePeaks) {
-        const diff = Math.abs(peak - throbTime);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closestPeak = peak;
-        }
-      }
-      if (closestPeak !== null) {
-        phases.push(timeDiffToPhase(throbTime - closestPeak, bpm));
-        deltas.push(throbTime - closestPeak);
-      }
+    const phases = [], deltas = [];
+    for (const throb of throbs) {
+      const previousPeaks = pulsePeaks.filter(p => p <= throb);
+      const priorPeak = previousPeaks.length ? previousPeaks[previousPeaks.length - 1] : 0;
+      const delta = throb - priorPeak;
+      const period = MS_PER_MIN / bpm;
+      const phase = ((delta % period) / period) * 2 * Math.PI;
+      phases.push(phase);
+      deltas.push(delta);
     }
 
-    // Calculate Rayleigh p-value and R
-    const rayleigh = rayleighTest(phases);
-    const pvl = phaseVectorLength(phases);
+    const r = phases.length ? Math.sqrt(phases.reduce((s,c)=>s+Math.sin(c)**2,0)+phases.reduce((s,c)=>s+Math.cos(c)**2,0)) / phases.length : 0;
+    const Z = phases.length * r * r;
+    const pValue = Math.exp(-Z);
 
-    // Store recording data
-    const rec = {
+    recordings.push({
       name: recordingNameInput.value.trim(),
       bpm: bpm.toFixed(2),
       duration: timer,
       throbs: [...throbs],
       pulsePeaks: [...pulsePeaks],
-      rayleighPValue: rayleigh.pValue,
-      rayleighR: rayleigh.r,
-      pvl,
+      rayleighPValue: pValue,
+      rayleighR: r,
       deltas
-    };
-    recordings.push(rec);
-    updateRecordingsList();
+    });
 
-    // Clear canvas and reset for next recording
-    timer = 0;
-    throbs = [];
-    pulsePeaks = [];
-    bpm = BPM_MIN;
-    draw();
+    updateRecordingsList();
+    timer = 0; throbs = []; pulsePeaks = []; draw();
   };
 
   markBtn.onclick = () => {
-    if (!isRecording || isPaused) return;
-    throbs.push(timer);
-    draw();
+    if (isRecording && !isPaused) {
+      throbs.push(timer);
+      draw();
+    }
   };
 
   toggleShowBtn.onclick = () => {
@@ -368,61 +298,38 @@
     draw();
   };
 
-  // Update recordings list display
   function updateRecordingsList() {
     if (recordings.length === 0) {
       recordingsListDiv.innerHTML = "<p>No recordings yet.</p>";
       return;
     }
 
-    let html = "";
-    recordings.forEach((rec, i) => {
-      html += `<div class="recording">
+    recordingsListDiv.innerHTML = recordings.map((rec, i) => `
+      <div class="recording">
         <strong>${rec.name}</strong> (Mean BPM: ${rec.bpm}, Duration: ${formatTime(rec.duration)})<br/>
         Throbs: ${rec.throbs.length}, Peaks: ${rec.pulsePeaks.length}<br/>
         Rayleigh p-value: ${rec.rayleighPValue.toFixed(4)}, R: ${rec.rayleighR.toFixed(4)}<br/>
-        PVL: ${rec.pvl.toFixed(4)}<br/>
         <button onclick="downloadCSV(${i})">Export CSV</button>
-      </div>`;
-    });
-    recordingsListDiv.innerHTML = html;
+      </div>
+    `).join("");
   }
 
-  // CSV download with delta differences
   window.downloadCSV = function(index) {
     const rec = recordings[index];
-    if (!rec) return alert("Recording not found.");
-
-    let csvContent = "data:text/csv;charset=utf-8,";
-    csvContent += "Recording Name,Mean BPM,Duration(ms),Throb Count,Pulse Peak Count,Rayleigh p-value,Rayleigh R,PVL\n";
-    csvContent += `"${rec.name}",${rec.bpm},${rec.duration},${rec.throbs.length},${rec.pulsePeaks.length},${rec.rayleighPValue},${rec.rayleighR},${rec.pvl}\n\n`;
-
-    csvContent += "Throb Time (ms),Closest Peak Time (ms),Delta Time (ms)\n";
+    let csv = "Throb Time (ms),Prior Peak Time (ms),Delta (ms)\n";
     for (let i = 0; i < rec.throbs.length; i++) {
       const throb = rec.throbs[i];
-      let closestPeak = null;
-      let minDiff = Infinity;
-      for (const peak of rec.pulsePeaks) {
-        const diff = Math.abs(peak - throb);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closestPeak = peak;
-        }
-      }
-      const delta = throb - closestPeak;
-      csvContent += `${throb.toFixed(2)},${closestPeak.toFixed(2)},${delta.toFixed(2)}\n`;
+      const priorPeak = rec.pulsePeaks.filter(p => p <= throb).pop() || 0;
+      const delta = throb - priorPeak;
+      csv += `${throb.toFixed(2)},${priorPeak.toFixed(2)},${delta.toFixed(2)}\n`;
     }
-
-    const encodedUri = encodeURI(csvContent);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", rec.name.replace(/\s+/g, "_") + "_recording.csv");
-    document.body.appendChild(link);
+    link.href = URL.createObjectURL(blob);
+    link.download = `${rec.name.replace(/\s+/g, "_")}_recording.csv`;
     link.click();
-    document.body.removeChild(link);
   };
 
-  // Initial draw
   draw();
 })();
 </script>
