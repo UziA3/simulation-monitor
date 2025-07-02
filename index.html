@@ -8,18 +8,15 @@
   canvas { border: 1px solid #ccc; margin-bottom: 10px; display: block; }
   button, label { margin: 5px; }
   .stats { margin-top: 10px; }
-  #recordingsList { margin-top: 40px; border-top: 1px solid #ddd; padding-top: 10px; }
-  #recordingsList div { margin-bottom: 10px; }
-  .recording-item { border: 1px solid #ccc; padding: 8px; border-radius: 5px; background: #f9f9f9; }
-  .recording-header { font-weight: bold; margin-bottom: 5px; }
-  .throb-times { font-family: monospace; font-size: 0.9em; margin-top: 6px; margin-bottom: 6px; }
+  #recordingsList { margin-top: 20px; }
+  #recordingsList button { margin-left: 10px; }
 </style>
 </head>
 <body>
 
 <h1>Pulse Throb Monitor (Simulated)</h1>
 
-<canvas id="canvas" width="800" height="200"></canvas>
+<canvas id="canvas" width="800" height="200"></canvas><br>
 
 <button id="startBtn">Start</button>
 <button id="pauseBtn" disabled>Pause</button>
@@ -30,13 +27,15 @@
 <div>Timer: <span id="timer">00:00</span></div>
 
 <div class="controls">
-  <button id="toggleAllBtn">Hide All Stats & Markings</button>
+  <button id="toggleAllBtn">Hide All Stats, Markings & Waveform</button>
 </div>
 
 <div class="stats" id="metricsDisplay"></div>
 
-<h2>Saved Recordings</h2>
-<div id="recordingsList"></div>
+<div id="recordingsList">
+  <h2>Saved Recordings</h2>
+  <div id="recordingsContainer"></div>
+</div>
 
 <script>
 (() => {
@@ -50,9 +49,8 @@
   const timerDisplay = document.getElementById("timer");
   const metricsDisplay = document.getElementById("metricsDisplay");
   const toggleAllBtn = document.getElementById("toggleAllBtn");
-  const recordingsList = document.getElementById("recordingsList");
+  const recordingsContainer = document.getElementById("recordingsContainer");
 
-  // Data for current recording
   let pulseWave = [];
   let throbs = [];
   let recordingStartTime = null;
@@ -62,18 +60,20 @@
   let animationId = null;
   let lastSampleTime = 0;
 
-  // All saved recordings
-  const recordings = [];
-
-  // Flag for display
+  // Toggle flag for showing stats, markings & waveform
   let allVisible = true;
 
-  // Constants
-  const DISPLAY_DURATION = 20000;
-  const SAMPLE_INTERVAL = 20;
+  // Saved recordings array
+  const recordings = [];
+
+  // Constants for waveform simulation
+  const DISPLAY_DURATION = 20000; // 20 seconds window on canvas
+  const SAMPLE_INTERVAL = 20; // 20 ms per sample
   const BASELINE = 100;
   const AMPLITUDE = 50;
-  const FREQ = 1.2;
+  const FREQ = 1.2; // frequency in Hz (approx 72 bpm)
+
+  // --- Simulation and Drawing ---
 
   function simulatePulse() {
     const now = performance.now();
@@ -93,6 +93,7 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (!allVisible) {
+      // Do not draw waveform, throbs or peaks
       if (isRecording && !isPaused) {
         animationId = requestAnimationFrame(draw);
       }
@@ -102,6 +103,7 @@
     const now = performance.now();
     const start = now - DISPLAY_DURATION;
 
+    // Draw waveform line
     ctx.beginPath();
     pulseWave.forEach((p, i) => {
       const x = ((p.time - start) / DISPLAY_DURATION) * canvas.width;
@@ -113,6 +115,7 @@
     ctx.lineWidth = 2;
     ctx.stroke();
 
+    // Draw throbs (red circles)
     throbs.forEach(throb => {
       if (throb.time < start || throb.time > now) return;
       const val = interpolatePulseValue(throb.time);
@@ -125,6 +128,7 @@
       ctx.fill();
     });
 
+    // Draw peaks (green circles)
     const peaks = findPeaks();
     peaks.forEach(peakTime => {
       if (peakTime < start || peakTime > now) return;
@@ -166,10 +170,11 @@
     return peaks;
   }
 
+  // --- Temporal Synchrony Calculations ---
+
   function calculatePhase(t) {
     const peaks = findPeaks();
     if (peaks.length < 2) return null;
-
     let prevPeak = null, nextPeak = null;
     for (let i = 0; i < peaks.length - 1; i++) {
       if (peaks[i] <= t && peaks[i + 1] > t) {
@@ -178,9 +183,7 @@
         break;
       }
     }
-
     if (prevPeak === null || nextPeak === null) return null;
-
     const phase = 2 * Math.PI * (t - prevPeak) / (nextPeak - prevPeak);
     return normalizeAngle(phase);
   }
@@ -221,247 +224,271 @@
     return Math.exp(-z);
   }
 
+  // Calculate PLV and related stats from throbs
   function calculatePLV() {
     throbs.forEach(throb => {
       throb.phase = calculatePhase(throb.time);
-      throb.pulseValue = interpolatePulseValue(throb.time);
     });
 
-    const validPhases = throbs.map(t => t.phase).filter(p => p !== null);
-    if (validPhases.length === 0) {
-      return {
-        plv: 0,
-        meanPhaseRad: null,
-        meanPhaseDeg: null,
-        variance: null,
-        rayleighP: null,
-        vectorStrength: 0,
-        numThrobs: 0
-      };
+    const validThrobs = throbs.filter(t => t.phase !== null);
+    if (validThrobs.length === 0) {
+      return { plv: 0, mean: null, variance: null, rayleigh: null };
     }
 
-    const n = validPhases.length;
-    const sumCos = validPhases.reduce((a, p) => a + Math.cos(p), 0);
-    const sumSin = validPhases.reduce((a, p) => a + Math.sin(p), 0);
+    const phases = validThrobs.map(t => t.phase);
+    const mean = circularMean(phases);
+    const variance = circularVariance(phases);
+    const rayleigh = rayleighTest(phases);
 
-    const R = Math.sqrt(sumCos * sumCos + sumSin * sumSin);
-    const plv = R / n;
-    const vectorStrength = plv; // Same as PLV, named for clarity
-    const meanPhaseRad = Math.atan2(sumSin, sumCos);
-    const meanPhaseRadNormalized = normalizeAngle(meanPhaseRad);
-    const meanPhaseDeg = (meanPhaseRadNormalized * 180 / Math.PI).toFixed(2);
-    const variance = 1 - (R / n);
-    const rayleighP = Math.exp(-(R * R) / n);
+    const sumReal = phases.reduce((a, p) => a + Math.cos(p), 0);
+    const sumImag = phases.reduce((a, p) => a + Math.sin(p), 0);
+    const plv = Math.sqrt(sumReal * sumReal + sumImag * sumImag) / phases.length;
 
-    return {
-      plv,
-      meanPhaseRad: meanPhaseRadNormalized,
-      meanPhaseDeg,
-      variance,
-      rayleighP,
-      vectorStrength,
-      numThrobs: n
-    };
+    return { plv, mean, variance, rayleigh };
   }
 
-  function formatRayleighP(p) {
-    if (p === null) return 'N/A';
-    if (p < 0.0001) return '<0.0001';
-    return p.toFixed(4);
-  }
+  function calculateMedianPulseRate() {
+    const peaks = findPeaks();
+    if (peaks.length < 2) return null;
 
-  function formatTime(ms) {
-    // Format ms with 2 decimals for easier reading
-    return ms.toFixed(2);
-  }
-
-  function formatElapsedTime(ms) {
-    const totalSeconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
-    const seconds = (totalSeconds % 60).toString().padStart(2, '0');
-    return `${minutes}:${seconds}`;
-  }
-
-  function updateTimer() {
-    if (!recordingStartTime) {
-      timerDisplay.textContent = "00:00";
-      return;
+    const intervals = [];
+    for (let i = 1; i < peaks.length; i++) {
+      intervals.push(peaks[i] - peaks[i - 1]);
     }
-    const elapsed = performance.now() - recordingStartTime;
-    timerDisplay.textContent = formatElapsedTime(elapsed);
+    intervals.sort((a, b) => a - b);
+
+    const mid = Math.floor(intervals.length / 2);
+    const medianInterval = intervals.length % 2 === 0
+      ? (intervals[mid - 1] + intervals[mid]) / 2
+      : intervals[mid];
+
+    if (!medianInterval || medianInterval === 0) return null;
+    return 60000 / medianInterval;
   }
+
+  // --- Display Metrics ---
 
   function updateMetricsDisplay() {
-    if (throbs.length === 0) {
-      metricsDisplay.textContent = "No throbs marked yet.";
+    if (!allVisible) {
+      metricsDisplay.innerHTML = "";
       return;
     }
     const stats = calculatePLV();
-    metricsDisplay.innerHTML = `
-      <strong>Phase Locking Value (PLV):</strong> ${stats.plv.toFixed(4)}<br />
-      <strong>Circular Variance:</strong> ${stats.variance.toFixed(4)}<br />
-      <strong>Rayleigh p-value:</strong> ${formatRayleighP(stats.rayleighP)}<br />
-      <strong>Mean Phase Angle:</strong> ${stats.meanPhaseDeg}°<br />
-      <strong>Vector Strength:</strong> ${stats.vectorStrength.toFixed(4)}<br />
-      <strong>Number of Throbs:</strong> ${stats.numThrobs}
-    `;
+    const medianPulseRate = calculateMedianPulseRate();
+    const totalPeaks = findPeaks().length;
+    const totalThrobs = throbs.length;
+
+    const lines = [];
+    lines.push(`PLV: ${stats.plv.toFixed(4)}`);
+    lines.push(`Mean Phase: ${stats.mean !== null ? stats.mean.toFixed(4) : "N/A"}`);
+    lines.push(`Phase Variance: ${stats.variance !== null ? stats.variance.toFixed(4) : "N/A"}`);
+    if (stats.rayleigh !== null) {
+      lines.push(`Rayleigh p-value: ${stats.rayleigh < 0.0001 ? "<0.0001" : stats.rayleigh.toFixed(4)}`);
+    } else {
+      lines.push(`Rayleigh p-value: N/A`);
+    }
+    lines.push(`Median Pulse Rate (bpm): ${medianPulseRate !== null ? medianPulseRate.toFixed(2) : "N/A"}`);
+    lines.push(`Total Peaks: ${totalPeaks}`);
+    lines.push(`Total Throbs: ${totalThrobs}`);
+
+    metricsDisplay.innerHTML = lines.map(line => `<div>${line}</div>`).join("");
   }
 
-  function createCSVContent(recording) {
-    const { throbs, stats } = recording;
-    let csv = 'Throb Index,Throb Time (ms),Pulse Value,Phase (radians),Phase (degrees)\n';
+  // --- Timer Functions ---
 
-    throbs.forEach((throb, i) => {
-      const tRelative = throb.time - recording.startTime;
-      const phaseDeg = throb.phase === null ? '' : (throb.phase * 180 / Math.PI).toFixed(2);
-      csv += `${i + 1},${formatTime(tRelative)},${throb.pulseValue ? throb.pulseValue.toFixed(2) : ''},${throb.phase !== null ? throb.phase.toFixed(4) : ''},${phaseDeg}\n`;
-    });
-
-    csv += '\n';
-    csv += 'Summary Statistics,,,\n';
-    csv += `PLV,${stats.plv.toFixed(4)}\n`;
-    csv += `Circular Variance,${stats.variance.toFixed(4)}\n`;
-    csv += `Rayleigh p-value,${formatRayleighP(stats.rayleighP)}\n`;
-    csv += `Mean Phase Angle (degrees),${stats.meanPhaseDeg}\n`;
-    csv += `Vector Strength,${stats.vectorStrength.toFixed(4)}\n`;
-    csv += `Number of Throbs,${stats.numThrobs}\n`;
-
-    return csv;
+  function updateTimer() {
+    if (!recordingStartTime) return;
+    let elapsed = performance.now() - recordingStartTime;
+    if (isPaused) {
+      elapsed = pauseTime - recordingStartTime;
+    }
+    const totalSeconds = Math.floor(elapsed / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    timerDisplay.textContent = `${minutes.toString().padStart(2,"0")}:${seconds.toString().padStart(2,"0")}`;
   }
 
-  function downloadCSV(recording) {
-    const csvContent = createCSVContent(recording);
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `recording_${new Date(recording.startTime).toISOString().replace(/[:.]/g, '-')}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
+  // --- Event Handlers ---
 
-  function addRecordingToList(recording, index) {
-    const div = document.createElement('div');
-    div.classList.add('recording-item');
-
-    const startDate = new Date(recording.startTime);
-    const startTimeStr = startDate.toLocaleString();
-
-    const stats = recording.stats;
-
-    div.innerHTML = `
-      <div class="recording-header">Recording #${index + 1} - Started: ${startTimeStr}</div>
-      <div><strong>Throb times (ms relative to start):</strong></div>
-      <div class="throb-times">${recording.throbs.map(t => formatTime(t.time - recording.startTime)).join(', ') || 'No throbs marked'}</div>
-      <div>
-        <strong>Summary statistics:</strong><br />
-        PLV: ${stats.plv.toFixed(4)}<br />
-        Circular Variance: ${stats.variance.toFixed(4)}<br />
-        Rayleigh p-value: ${formatRayleighP(stats.rayleighP)}<br />
-        Mean Phase Angle: ${stats.meanPhaseDeg}°<br />
-        Vector Strength: ${stats.vectorStrength.toFixed(4)}<br />
-        Number of Throbs: ${stats.numThrobs}
-      </div>
-      <button data-index="${index}" class="downloadBtn">Download CSV</button>
-    `;
-
-    recordingsList.appendChild(div);
-  }
-
-  function refreshRecordingsList() {
-    recordingsList.innerHTML = '';
-    recordings.forEach((rec, idx) => {
-      addRecordingToList(rec, idx);
-    });
-
-    // Attach listeners for download buttons
-    document.querySelectorAll('.downloadBtn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = Number(btn.getAttribute('data-index'));
-        downloadCSV(recordings[idx]);
-      });
-    });
-  }
-
-  startBtn.addEventListener("click", () => {
+  startBtn.onclick = () => {
     if (isRecording) return;
     recordingStartTime = performance.now();
-    throbs = [];
     pulseWave = [];
+    throbs = [];
     isRecording = true;
     isPaused = false;
-
-    startBtn.disabled = true;
-    pauseBtn.disabled = false;
-    resumeBtn.disabled = true;
-    stopBtn.disabled = false;
-    throbBtn.disabled = false;
-
-    updateTimer();
-    timerInterval = setInterval(updateTimer, 250);
     updateMetricsDisplay();
     draw();
-  });
+    timerInterval = setInterval(updateTimer, 200);
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    stopBtn.disabled = false;
+    resumeBtn.disabled = true;
+    throbBtn.disabled = false;
+  };
 
-  pauseBtn.addEventListener("click", () => {
+  pauseBtn.onclick = () => {
     if (!isRecording || isPaused) return;
     isPaused = true;
+    pauseTime = performance.now();
+    clearInterval(timerInterval);
+    if (animationId) cancelAnimationFrame(animationId);
     pauseBtn.disabled = true;
     resumeBtn.disabled = false;
     throbBtn.disabled = true;
-    cancelAnimationFrame(animationId);
-    clearInterval(timerInterval);
-  });
+  };
 
-  resumeBtn.addEventListener("click", () => {
+  resumeBtn.onclick = () => {
     if (!isRecording || !isPaused) return;
+    // Adjust recordingStartTime to keep elapsed consistent
+    const now = performance.now();
+    const pausedDuration = now - pauseTime;
+    recordingStartTime += pausedDuration;
     isPaused = false;
+    updateTimer();
+    timerInterval = setInterval(updateTimer, 200);
+    draw();
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
     throbBtn.disabled = false;
-    updateTimer();
-    timerInterval = setInterval(updateTimer, 250);
-    draw();
-  });
+  };
 
-  stopBtn.addEventListener("click", () => {
+  stopBtn.onclick = () => {
     if (!isRecording) return;
     isRecording = false;
     isPaused = false;
-
+    clearInterval(timerInterval);
+    if (animationId) cancelAnimationFrame(animationId);
+    updateMetricsDisplay();
     startBtn.disabled = false;
     pauseBtn.disabled = true;
     resumeBtn.disabled = true;
     stopBtn.disabled = true;
     throbBtn.disabled = true;
 
-    clearInterval(timerInterval);
-    cancelAnimationFrame(animationId);
+    // Save recording
+    saveRecording();
+    updateRecordingsList();
+  };
 
-    const stats = calculatePLV();
-    // Save current recording
-    recordings.push({
-      startTime: recordingStartTime,
-      throbs: throbs.map(t => ({...t})),
-      stats
-    });
-    updateMetricsDisplay();
-    refreshRecordingsList();
-  });
-
-  throbBtn.addEventListener("click", () => {
+  throbBtn.onclick = () => {
     if (!isRecording || isPaused) return;
-    const now = performance.now();
-    throbs.push({ time: now, phase: null, pulseValue: null });
+    throbs.push({ time: performance.now() });
     updateMetricsDisplay();
-  });
+  };
 
-  toggleAllBtn.addEventListener("click", () => {
+  toggleAllBtn.onclick = () => {
     allVisible = !allVisible;
-    toggleAllBtn.textContent = allVisible ? 'Hide All Stats & Markings' : 'Show All Stats & Markings';
-  });
+    if (allVisible) {
+      toggleAllBtn.textContent = "Hide All Stats, Markings & Waveform";
+    } else {
+      toggleAllBtn.textContent = "Show All Stats, Markings & Waveform";
+    }
+    updateMetricsDisplay();
+    draw();
+  };
+
+  // --- Saving and Exporting Recordings ---
+
+  function saveRecording() {
+    if (throbs.length === 0) return; // don't save empty
+    const now = new Date();
+    const timestampStr = now.toISOString().replace("T", " ").split(".")[0];
+    const rec = {
+      id: Date.now(),
+      name: `Recording_${timestampStr}`,
+      pulseWave: pulseWave.slice(),
+      throbs: throbs.slice(),
+      durationMs: performance.now() - recordingStartTime
+    };
+    recordings.push(rec);
+  }
+
+  function updateRecordingsList() {
+    recordingsContainer.innerHTML = "";
+    if (recordings.length === 0) {
+      recordingsContainer.textContent = "No recordings saved yet.";
+      return;
+    }
+
+    recordings.forEach(rec => {
+      const div = document.createElement("div");
+      div.style.marginBottom = "8px";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = rec.name;
+      nameSpan.style.fontWeight = "bold";
+
+      const dlBtn = document.createElement("button");
+      dlBtn.textContent = "Download CSV";
+      dlBtn.onclick = () => {
+        const csv = generateCSV(rec);
+        downloadCSV(csv, rec.name + ".csv");
+      };
+
+      div.appendChild(nameSpan);
+      div.appendChild(dlBtn);
+      recordingsContainer.appendChild(div);
+    });
+  }
+
+  // --- CSV Generation ---
+
+  function formatTimeMs(timeMs) {
+    return (timeMs / 1000).toFixed(2); // seconds with 2 decimals
+  }
+
+  function generateCSV(rec) {
+    // Calculate stats
+    const throbsWithPhase = rec.throbs.map(t => ({
+      ...t,
+      phase: calculatePhase(t.time)
+    })).filter(t => t.phase !== null);
+
+    const phases = throbsWithPhase.map(t => t.phase);
+
+    // Recalculate stats on this recording's throbs:
+    const meanPhase = circularMean(phases);
+    const phaseVar = circularVariance(phases);
+    const rayleighP = rayleighTest(phases);
+
+    const n = phases.length;
+    const sumReal = phases.reduce((a, p) => a + Math.cos(p), 0);
+    const sumImag = phases.reduce((a, p) => a + Math.sin(p), 0);
+    const plv = n === 0 ? 0 : Math.sqrt(sumReal * sumReal + sumImag * sumImag) / n;
+
+    // Format header and rows
+    let csv = `Throb #,Time (s),Phase (rad)\n`;
+    throbsWithPhase.forEach((throb, i) => {
+      csv += `${i + 1},${formatTimeMs(throb.time - rec.pulseWave[0].time)},${throb.phase.toFixed(4)}\n`;
+    });
+
+    csv += `\nOverall Statistics\n`;
+    csv += `Total Throbs,${n}\n`;
+    csv += `PLV,${plv.toFixed(4)}\n`;
+    csv += `Mean Phase (rad),${meanPhase !== null ? meanPhase.toFixed(4) : "N/A"}\n`;
+    csv += `Phase Variance,${phaseVar !== null ? phaseVar.toFixed(4) : "N/A"}\n`;
+    csv += `Rayleigh p-value,${rayleighP !== null ? (rayleighP < 0.0001 ? "<0.0001" : rayleighP.toFixed(4)) : "N/A"}\n`;
+
+    return csv;
+  }
+
+  function downloadCSV(csv, filename) {
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // --- Initialize ---
+
+  updateRecordingsList();
 
 })();
 </script>
