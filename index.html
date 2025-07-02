@@ -1,18 +1,19 @@
-<!-- Save as pulse-throb-simulator-debug.html -->
+<!-- Save this as pulse-throb-simulator.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Pulse Throb Simulator with PLV - Debug</title>
+  <title>Pulse Throb Simulator with PLV</title>
   <style>
     body { font-family: sans-serif; margin: 20px; }
     canvas { border: 1px solid #ccc; margin-bottom: 10px; }
     button { margin: 5px; }
+    #metrics { margin-top: 10px; font-weight: bold; }
   </style>
 </head>
 <body>
 
-<h1>Pulse Throb Monitor (Simulated) - Debug Version</h1>
+<h1>Pulse Throb Monitor (Simulated)</h1>
 <canvas id="canvas" width="800" height="200"></canvas><br>
 <button id="startBtn">Start</button>
 <button id="pauseBtn" disabled>Pause</button>
@@ -20,6 +21,7 @@
 <button id="stopBtn" disabled>Stop</button>
 <button id="throbBtn" disabled>Mark Throb</button>
 <div>Timer: <span id="timer">00:00</span></div>
+<div id="metrics"></div>
 <ul id="recordingsList"></ul>
 
 <script>
@@ -33,6 +35,7 @@
   const throbBtn = document.getElementById("throbBtn");
   const timerDisplay = document.getElementById("timer");
   const recordingsList = document.getElementById("recordingsList");
+  const metricsDiv = document.getElementById("metrics");
 
   let pulseWave = [];
   let throbs = [];
@@ -66,6 +69,7 @@
     const now = performance.now();
     const start = now - DISPLAY_DURATION;
 
+    // Draw pulse waveform line
     ctx.beginPath();
     pulseWave.forEach((p, i) => {
       const x = ((p.time - start) / DISPLAY_DURATION) * canvas.width;
@@ -74,9 +78,24 @@
       else ctx.lineTo(x, y);
     });
     ctx.strokeStyle = "blue";
+    ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Draw throbs
+    // Draw detected peaks as green circles
+    const peaks = findPeaks();
+    peaks.forEach(t => {
+      if (t < start || t > now) return;
+      const val = interpolatePulseValue(t);
+      if (val === null) return;
+      const x = ((t - start) / DISPLAY_DURATION) * canvas.width;
+      const y = canvas.height - val;
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, 2 * Math.PI);
+      ctx.fillStyle = "green";
+      ctx.fill();
+    });
+
+    // Draw throbs as red circles
     throbs.forEach(throb => {
       if (throb.time < start || throb.time > now) return;
       const val = interpolatePulseValue(throb.time);
@@ -84,7 +103,7 @@
       const x = ((throb.time - start) / DISPLAY_DURATION) * canvas.width;
       const y = canvas.height - val;
       ctx.beginPath();
-      ctx.arc(x, y, 5, 0, 2 * Math.PI);
+      ctx.arc(x, y, 7, 0, 2 * Math.PI);
       ctx.fillStyle = "red";
       ctx.fill();
     });
@@ -108,7 +127,7 @@
 
   function findPeaks() {
     const peaks = [];
-    const window = 1;  // smaller window for sensitivity
+    const window = 2; // number of samples on each side
     for (let i = window; i < pulseWave.length - window; i++) {
       const cur = pulseWave[i].value;
       let isPeak = true;
@@ -120,29 +139,41 @@
       }
       if (isPeak) peaks.push(pulseWave[i].time);
     }
-    console.log("Detected peaks (ms since start):", peaks.map(p => (p - recordingStartTime).toFixed(0)));
     return peaks;
   }
 
+  // Updated phase calculation with edge extrapolation & wrapping
   function calculatePhase(t) {
     const peaks = findPeaks();
-    let prev = null, next = null;
-    for (let i = 0; i < peaks.length - 1; i++) {
-      if (peaks[i] <= t && peaks[i + 1] > t) {
-        prev = peaks[i];
-        next = peaks[i + 1];
-        break;
+    if (peaks.length < 2) return null;
+
+    // Find index i where peaks[i] <= t < peaks[i+1]
+    let i = peaks.findIndex((peak, idx) => peak <= t && t < peaks[idx + 1]);
+
+    if (i === -1) {
+      if (t < peaks[0]) {
+        // Before first peak: extrapolate backward
+        const firstInterval = peaks[1] - peaks[0];
+        let phase = 2 * Math.PI * (t - peaks[0]) / firstInterval;
+        return (phase + 2 * Math.PI) % (2 * Math.PI);
       }
+      if (t >= peaks[peaks.length - 1]) {
+        // After last peak: extrapolate forward
+        const lastInterval = peaks[peaks.length - 1] - peaks[peaks.length - 2];
+        let phase = 2 * Math.PI * (t - peaks[peaks.length - 1]) / lastInterval;
+        return phase % (2 * Math.PI);
+      }
+      return null; // Fallback
     }
-    if (!prev || !next) {
-      console.warn("Phase calculation failed for time:", (t - recordingStartTime).toFixed(0));
-      return null;
-    }
+
+    // Normal case
+    const prev = peaks[i];
+    const next = peaks[i + 1];
     const phase = 2 * Math.PI * (t - prev) / (next - prev);
-    console.log(`Phase for t=${(t - recordingStartTime).toFixed(0)}ms: ${phase.toFixed(4)}`);
     return phase;
   }
 
+  // Calculate PLV (Phase Locking Value)
   function calculatePLV() {
     const valid = throbs.filter(t => t.phase !== null);
     if (valid.length === 0) return 0;
@@ -154,126 +185,33 @@
     return Math.sqrt(sumReal ** 2 + sumImag ** 2) / valid.length;
   }
 
-  // Rayleigh test for uniformity of phase angles
-  // returns approximate p-value, using formula for large samples
-  function calculateRayleighP() {
-    const valid = throbs.filter(t => t.phase !== null);
-    if (valid.length === 0) return null;
-    const n = valid.length;
-    let sumReal = 0, sumImag = 0;
-    valid.forEach(t => {
-      sumReal += Math.cos(t.phase);
-      sumImag += Math.sin(t.phase);
+  // Calculate Mean Resultant Vector Length (same as PLV here)
+  function meanResultantLength(phases) {
+    if (phases.length === 0) return 0;
+    let sumCos = 0, sumSin = 0;
+    phases.forEach(p => {
+      sumCos += Math.cos(p);
+      sumSin += Math.sin(p);
     });
-    const R = Math.sqrt(sumReal**2 + sumImag**2) / n;
-    const z = n * R * R;
-    // Approximate p-value for Rayleigh test
-    const p = Math.exp(-z) * (1 + (2*z - z*z)/(4*n) - (24*z - 132*z*z + 76*z*z*z - 9*z*z*z*z)/(288*n*n));
-    return p;
+    return Math.sqrt(sumCos * sumCos + sumSin * sumSin) / phases.length;
   }
 
-  // Circular variance and std dev of phases
-  function calculateCircularStats() {
-    const valid = throbs.filter(t => t.phase !== null);
-    if (valid.length === 0) return { variance: null, stddev: null };
-    const n = valid.length;
-    let sumReal = 0, sumImag = 0;
-    valid.forEach(t => {
-      sumReal += Math.cos(t.phase);
-      sumImag += Math.sin(t.phase);
-    });
-    const R = Math.sqrt(sumReal**2 + sumImag**2) / n;
-    const variance = 1 - R;
-    const stddev = Math.sqrt(-2 * Math.log(R));
-    return { variance, stddev };
+  // Calculate Phase Variance
+  function phaseVariance(phases) {
+    if (phases.length === 0) return 0;
+    const R = meanResultantLength(phases);
+    return 1 - R;
   }
 
-  // Mean inter-throb interval (ms)
-  function calculateMeanInterThrobInterval() {
-    if (throbs.length < 2) return null;
-    const intervals = [];
-    for (let i = 1; i < throbs.length; i++) {
-      intervals.push(throbs[i].time - throbs[i-1].time);
-    }
-    return intervals.reduce((a,b) => a+b, 0) / intervals.length;
-  }
-
-  // Mean pulse cycle length (ms)
-  function calculateMeanCycleLength() {
-    const peaks = findPeaks();
-    if (peaks.length < 2) return null;
-    const intervals = [];
-    for (let i = 1; i < peaks.length; i++) {
-      intervals.push(peaks[i] - peaks[i-1]);
-    }
-    return intervals.reduce((a,b) => a+b, 0) / intervals.length;
-  }
-
-  // Cross-correlation between throbs and pulse peaks
-  // Simplified: compute correlation between interp throbs timeseries and pulse peaks timeseries
-  function calculateCrossCorrelation() {
-    const peaks = findPeaks();
-    if (peaks.length < 2 || throbs.length < 2) return { maxCorr: null, lag: null };
-
-    // Build time series vectors: 1ms bins over recording duration
-    const start = recordingStartTime;
-    const end = performance.now();
-    const duration = end - start;
-    const bins = Math.floor(duration); // 1 ms bins
-
-    const pulseVec = new Array(bins).fill(0);
-    const throbVec = new Array(bins).fill(0);
-
-    peaks.forEach(t => {
-      const idx = Math.floor(t - start);
-      if (idx >= 0 && idx < bins) pulseVec[idx] = 1;
+  // Calculate Mean Phase Angle (circular mean)
+  function meanPhase(phases) {
+    if (phases.length === 0) return null;
+    let sumSin = 0, sumCos = 0;
+    phases.forEach(p => {
+      sumSin += Math.sin(p);
+      sumCos += Math.cos(p);
     });
-
-    throbs.forEach(t => {
-      const idx = Math.floor(t.time - start);
-      if (idx >= 0 && idx < bins) throbVec[idx] = 1;
-    });
-
-    // Compute normalized cross-correlation and find max
-    let maxCorr = -Infinity;
-    let bestLag = 0;
-    const maxLag = 5000; // max lag 5s
-
-    for (let lag = -maxLag; lag <= maxLag; lag += 10) {
-      let sumP = 0, sumT = 0, sumPT = 0;
-      let count = 0;
-      for (let i = 0; i < bins; i++) {
-        const j = i + lag;
-        if (j < 0 || j >= bins) continue;
-        const pVal = pulseVec[i];
-        const tVal = throbVec[j];
-        sumP += pVal;
-        sumT += tVal;
-        sumPT += pVal * tVal;
-        count++;
-      }
-      if (count === 0) continue;
-      const meanP = sumP / count;
-      const meanT = sumT / count;
-      let num = 0;
-      let denP = 0;
-      let denT = 0;
-      for (let i = 0; i < count; i++) {
-        const pVal = pulseVec[i];
-        const tVal = throbVec[i + lag];
-        num += (pVal - meanP) * (tVal - meanT);
-        denP += (pVal - meanP) ** 2;
-        denT += (tVal - meanT) ** 2;
-      }
-      const den = Math.sqrt(denP * denT);
-      if (den === 0) continue;
-      const corr = num / den;
-      if (corr > maxCorr) {
-        maxCorr = corr;
-        bestLag = lag;
-      }
-    }
-    return { maxCorr, lag: bestLag };
+    return Math.atan2(sumSin, sumCos);
   }
 
   function updateTimer() {
@@ -328,15 +266,31 @@
   };
 
   throbBtn.onclick = () => {
-    const peaks = findPeaks();
-    if (peaks.length < 2) {
-      alert("Not enough pulse peaks detected yet. Wait a moment.");
-      return;
-    }
     const t = performance.now();
     const phase = calculatePhase(t);
     throbs.push({ time: t, phase });
+    updateMetricsDisplay();
   };
+
+  // Update metrics below the timer in real-time
+  function updateMetricsDisplay() {
+    const phases = throbs
+      .map(t => t.phase)
+      .filter(p => p !== null);
+    if (phases.length === 0) {
+      metricsDiv.textContent = "No valid throbs with phase yet.";
+      return;
+    }
+
+    const plv = calculatePLV();
+    const meanPh = meanPhase(phases);
+    const varPh = phaseVariance(phases);
+
+    metricsDiv.innerHTML =
+      `PLV (Phase Locking Value): ${plv.toFixed(4)}<br>` +
+      `Mean Phase Angle: ${meanPh !== null ? meanPh.toFixed(4) : "N/A"} radians<br>` +
+      `Phase Variance: ${varPh.toFixed(4)}`;
+  }
 
   function exportCSV() {
     const header = ["Throb #", "Time (ms)", "Phase (radians)"];
@@ -345,42 +299,29 @@
       (t.time - recordingStartTime).toFixed(1),
       t.phase !== null ? t.phase.toFixed(4) : "N/A"
     ]);
+    const phases = throbs.map(t => t.phase).filter(p => p !== null);
     const plv = calculatePLV();
-    const rayleighP = calculateRayleighP();
-    const { variance: circVar, stddev: circStd } = calculateCircularStats();
-    const meanITI = calculateMeanInterThrobInterval();
-    const meanCycle = calculateMeanCycleLength();
-    const { maxCorr, lag } = calculateCrossCorrelation();
-
-    console.log("PLV:", plv);
-    console.log("Rayleigh p-value:", rayleighP);
-    console.log("Circular Variance:", circVar);
-    console.log("Circular StdDev:", circStd);
-    console.log("Mean Inter-Throb Interval (ms):", meanITI);
-    console.log("Mean Pulse Cycle Length (ms):", meanCycle);
-    console.log("Cross-Correlation Max:", maxCorr);
-    console.log("Cross-Correlation Lag (ms):", lag);
+    const meanPh = meanPhase(phases);
+    const varPh = phaseVariance(phases);
 
     let csv = header.join(",") + "\n";
     rows.forEach(row => csv += row.join(",") + "\n");
     csv += `\nPLV:,${plv.toFixed(4)}\n`;
-    csv += `Rayleigh p-value:,${rayleighP !== null ? rayleighP.toExponential(3) : "N/A"}\n`;
-    csv += `Circular Variance:,${circVar !== null ? circVar.toFixed(4) : "N/A"}\n`;
-    csv += `Circular StdDev:,${circStd !== null ? circStd.toFixed(4) : "N/A"}\n`;
-    csv += `Mean Inter-Throb Interval (ms):,${meanITI !== null ? meanITI.toFixed(1) : "N/A"}\n`;
-    csv += `Mean Pulse Cycle Length (ms):,${meanCycle !== null ? meanCycle.toFixed(1) : "N/A"}\n`;
-    csv += `Cross-Correlation Max:,${maxCorr !== null ? maxCorr.toFixed(4) : "N/A"}\n`;
-    csv += `Cross-Correlation Lag (ms):,${lag !== null ? lag : "N/A"}\n`;
+    csv += `Mean Phase Angle (radians):,${meanPh !== null ? meanPh.toFixed(4) : "N/A"}\n`;
+    csv += `Phase Variance:,${varPh.toFixed(4)}\n`;
 
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const name = `simulated_throb_${Date.now()}.csv`;
     a.href = url;
-    a.download = `pulse_throb_${Date.now()}.csv`;
-    document.body.appendChild(a);
+    a.download = name;
     a.click();
-    document.body.removeChild(a);
     URL.revokeObjectURL(url);
+
+    const li = document.createElement("li");
+    li.textContent = name;
+    recordingsList.appendChild(li);
   }
 })();
 </script>
