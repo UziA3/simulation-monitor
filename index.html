@@ -1,72 +1,264 @@
-  function circularStandardDeviation(phases) {
-    const R = meanResultantLength(phases);
-    return Math.sqrt(-2 * Math.log(R));
-  }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Throb-Pulse Synchrony Simulator</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    canvas { border: 1px solid #ccc; display: block; margin-bottom: 10px; }
+    .info { margin-top: 10px; }
+    #statsContainer { margin-top: 10px; display: block; }
+  </style>
+</head>
+<body>
+  <h1>Throb-Pulse Synchrony Simulator</h1>
+  <button id="startBtn">Start</button>
+  <button id="pauseBtn">Pause</button>
+  <button id="resumeBtn">Resume</button>
+  <button id="stopBtn">Stop</button>
+  <button id="markThrobBtn">Mark Throb</button>
+  <button id="toggleStatsBtn">Hide Stats</button>
+  <div id="statsContainer" class="info">
+    Timer: <span id="timer">00:00</span><br />
+    Peaks detected: <span id="peakCount">0</span><br />
+    PLV: <span id="plvDisplay">0.0000</span><br />
+    Mean Phase Angle: <span id="meanPhaseDisplay">0.0000</span><br />
+    Phase Variance: <span id="phaseVarDisplay">0.0000</span>
+  </div>
+  <ul id="recordingsList"></ul>
+  <canvas id="waveform" width="800" height="200"></canvas>
 
-  function circularSkewness(phases) {
-    if (phases.length === 0) return 0;
-    let sumSin = 0, sumCos = 0;
-    phases.forEach(p => {
-      sumSin += Math.sin(p);
-      sumCos += Math.cos(p);
-    });
-    const thetaBar = Math.atan2(sumSin, sumCos);
+  <script>
+    (() => {
+      const canvas = document.getElementById("waveform");
+      const ctx = canvas.getContext("2d");
+      const startBtn = document.getElementById("startBtn");
+      const pauseBtn = document.getElementById("pauseBtn");
+      const resumeBtn = document.getElementById("resumeBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const markThrobBtn = document.getElementById("markThrobBtn");
+      const timerDisplay = document.getElementById("timer");
+      const peakCountDisplay = document.getElementById("peakCount");
+      const plvDisplay = document.getElementById("plvDisplay");
+      const meanPhaseDisplay = document.getElementById("meanPhaseDisplay");
+      const phaseVarDisplay = document.getElementById("phaseVarDisplay");
+      const statsContainer = document.getElementById("statsContainer");
+      const toggleStatsBtn = document.getElementById("toggleStatsBtn");
+      const recordingsList = document.getElementById("recordingsList");
 
-    let num = 0;
-    phases.forEach(p => {
-      const angle = ((p - thetaBar + 2 * Math.PI) % (2 * Math.PI));
-      num += Math.sin(2 * angle);
-    });
+      let pulseWave = [];
+      let throbs = [];
+      let startTime, recordingStartTime;
+      let running = false;
+      let timerInterval;
 
-    return num / phases.length;
-  }
+      toggleStatsBtn.onclick = () => {
+        if (statsContainer.style.display === "none") {
+          statsContainer.style.display = "block";
+          toggleStatsBtn.textContent = "Hide Stats";
+        } else {
+          statsContainer.style.display = "none";
+          toggleStatsBtn.textContent = "Show Stats";
+        }
+      };
 
-  function rayleighTestStatistic(phases) {
-    const R = meanResultantLength(phases);
-    return 2 * phases.length * R * R;
-  }
+      function draw() {
+        if (!running) return;
+        const currentTime = performance.now();
+        const elapsed = currentTime - recordingStartTime;
+        const t = elapsed / 1000;
+        const amplitude = Math.sin(t * 2 * Math.PI * 1.2); // ~72 BPM
+        pulseWave.push({ time: currentTime, value: amplitude });
+        if (pulseWave.length > 1000) pulseWave.shift();
 
-  function exportCSV() {
-    const header = ["Throb #", "Time (ms)", "Phase (radians)"];
-    const rows = throbs.map((t, i) => [
-      i + 1,
-      (t.time - recordingStartTime).toFixed(1),
-      t.phase !== null ? t.phase.toFixed(4) : "N/A"
-    ]);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.beginPath();
+        pulseWave.forEach((p, i) => {
+          const x = (i / pulseWave.length) * canvas.width;
+          const y = canvas.height / 2 - p.value * 80;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
 
-    const phases = throbs.map(t => t.phase).filter(p => p !== null);
-    const plv = calculatePLV();
-    const meanPh = meanPhase(phases);
-    const varPh = phaseVariance(phases);
-    const stdDev = circularStandardDeviation(phases);
-    const skew = circularSkewness(phases);
-    const rayleigh = rayleighTestStatistic(phases);
-    const duration = pulseWave.length > 0
-      ? (pulseWave[pulseWave.length - 1].time - recordingStartTime).toFixed(1)
-      : "N/A";
+        const phases = throbs.map(t => t.phase).filter(p => p !== null);
+        plvDisplay.textContent = calculatePLV().toFixed(4);
+        meanPhaseDisplay.textContent = meanPhase(phases).toFixed(4);
+        phaseVarDisplay.textContent = phaseVariance(phases).toFixed(4);
+        peakCountDisplay.textContent = detectPeaks().length;
+        requestAnimationFrame(draw);
+      }
 
-    let csv = header.join(",") + "\n";
-    rows.forEach(row => csv += row.join(",") + "\n");
+      function start() {
+        startTime = recordingStartTime = performance.now();
+        pulseWave = [];
+        throbs = [];
+        running = true;
+        timerInterval = setInterval(updateTimer, 1000);
+        draw();
+      }
 
-    csv += `\nPLV:,${plv.toFixed(4)}\n`;
-    csv += `Mean Phase Angle (radians):,${meanPh !== null ? meanPh.toFixed(4) : "N/A"}\n`;
-    csv += `Phase Variance:,${varPh.toFixed(4)}\n`;
-    csv += `Circular Std Dev:,${stdDev.toFixed(4)}\n`;
-    csv += `Circular Skewness:,${skew.toFixed(4)}\n`;
-    csv += `Rayleigh Test Statistic:,${rayleigh.toFixed(4)}\n`;
-    csv += `Number of Throbs:,${phases.length}\n`;
-    csv += `Recording Duration (ms):,${duration}\n`;
+      function pause() {
+        running = false;
+        clearInterval(timerInterval);
+      }
 
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const name = `simulated_throb_${Date.now()}.csv`;
-    a.href = url;
-    a.download = name;
-    a.click();
-    URL.revokeObjectURL(url);
+      function resume() {
+        if (!running) {
+          running = true;
+          draw();
+          timerInterval = setInterval(updateTimer, 1000);
+        }
+      }
 
-    const li = document.createElement("li");
-    li.textContent = name;
-    recordingsList.appendChild(li);
-  }
+      function stop() {
+        running = false;
+        clearInterval(timerInterval);
+        exportCSV();
+      }
+
+      function updateTimer() {
+        const elapsed = Math.floor((performance.now() - recordingStartTime) / 1000);
+        const min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const sec = String(elapsed % 60).padStart(2, '0');
+        timerDisplay.textContent = `${min}:${sec}`;
+      }
+
+      function markThrob() {
+        if (!running) return;
+        const currentTime = performance.now();
+        const peaks = detectPeaks();
+        const lastPeak = peaks.reverse().find(p => p.time <= currentTime);
+        if (!lastPeak) return;
+        const phase = 2 * Math.PI * ((currentTime - lastPeak.time) / (lastPeak.period || 1000));
+        throbs.push({ time: currentTime, phase });
+      }
+
+      function detectPeaks() {
+        const threshold = 0.9;
+        const peaks = [];
+        for (let i = 1; i < pulseWave.length - 1; i++) {
+          if (pulseWave[i - 1].value < pulseWave[i].value &&
+              pulseWave[i + 1].value < pulseWave[i].value &&
+              pulseWave[i].value > threshold) {
+            const time = pulseWave[i].time;
+            const last = peaks.length ? peaks[peaks.length - 1].time : null;
+            peaks.push({ time, period: last ? time - last : null });
+          }
+        }
+        return peaks;
+      }
+
+      function meanResultantLength(phases) {
+        if (phases.length === 0) return 0;
+        let sumX = 0, sumY = 0;
+        phases.forEach(p => {
+          sumX += Math.cos(p);
+          sumY += Math.sin(p);
+        });
+        return Math.sqrt(sumX ** 2 + sumY ** 2) / phases.length;
+      }
+
+      function calculatePLV() {
+        return meanResultantLength(throbs.map(t => t.phase).filter(p => p !== null));
+      }
+
+      function meanPhase(phases) {
+        if (phases.length === 0) return 0;
+        let sumX = 0, sumY = 0;
+        phases.forEach(p => {
+          sumX += Math.cos(p);
+          sumY += Math.sin(p);
+        });
+        return Math.atan2(sumY, sumX);
+      }
+
+      function phaseVariance(phases) {
+        const R = meanResultantLength(phases);
+        return 1 - R;
+      }
+
+      function circularStandardDeviation(phases) {
+        const R = meanResultantLength(phases);
+        return Math.sqrt(-2 * Math.log(R));
+      }
+
+      function circularSkewness(phases) {
+        if (phases.length === 0) return 0;
+        let sumSin = 0, sumCos = 0;
+        phases.forEach(p => {
+          sumSin += Math.sin(p);
+          sumCos += Math.cos(p);
+        });
+        const thetaBar = Math.atan2(sumSin, sumCos);
+        let num = 0;
+        phases.forEach(p => {
+          const angle = ((p - thetaBar + 2 * Math.PI) % (2 * Math.PI));
+          num += Math.sin(2 * angle);
+        });
+        return num / phases.length;
+      }
+
+      function rayleighTestStatistic(phases) {
+        const R = meanResultantLength(phases);
+        return 2 * phases.length * R * R;
+      }
+
+      function exportCSV() {
+        const header = ["Throb #", "Time (ms)", "Phase (radians)"];
+        const rows = throbs.map((t, i) => [
+          i + 1,
+          (t.time - recordingStartTime).toFixed(1),
+          t.phase !== null ? t.phase.toFixed(4) : "N/A"
+        ]);
+
+        const phases = throbs.map(t => t.phase).filter(p => p !== null);
+        const plv = calculatePLV();
+        const meanPh = meanPhase(phases);
+        const varPh = phaseVariance(phases);
+        const stdDev = circularStandardDeviation(phases);
+        const skew = circularSkewness(phases);
+        const rayleigh = rayleighTestStatistic(phases);
+        const duration = pulseWave.length > 0
+          ? (pulseWave[pulseWave.length - 1].time - recordingStartTime).toFixed(1)
+          : "N/A";
+
+        let csv = header.join(",") + "\n";
+        rows.forEach(row => csv += row.join(",") + "\n");
+
+        csv += `\nPLV:,${plv.toFixed(4)}\n`;
+        csv += `Mean Phase Angle (radians):,${meanPh.toFixed(4)}\n`;
+        csv += `Phase Variance:,${varPh.toFixed(4)}\n`;
+        csv += `Circular Std Dev:,${stdDev.toFixed(4)}\n`;
+        csv += `Circular Skewness:,${skew.toFixed(4)}\n`;
+        csv += `Rayleigh Test Statistic:,${rayleigh.toFixed(4)}\n`;
+        csv += `Vector Strength:,${plv.toFixed(4)}\n`;
+        csv += `Mean Resultant Length:,${plv.toFixed(4)}\n`;
+        csv += `Phase Coherence Index (PCI):,${plv.toFixed(4)}\n`;
+        csv += `Number of Throbs:,${phases.length}\n`;
+        csv += `Recording Duration (ms):,${duration}\n`;
+
+        const blob = new Blob([csv], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const name = `simulated_throb_${Date.now()}.csv`;
+        a.href = url;
+        a.download = name;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        const li = document.createElement("li");
+        li.textContent = name;
+        recordingsList.appendChild(li);
+      }
+
+      startBtn.onclick = start;
+      pauseBtn.onclick = pause;
+      resumeBtn.onclick = resume;
+      stopBtn.onclick = stop;
+      markThrobBtn.onclick = markThrob;
+    })();
+  </script>
+</body>
+</html>
