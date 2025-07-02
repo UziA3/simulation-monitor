@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Pulse Throb Monitor</title>
+  <title>Pulse Throb Simulator with Toggle Stats</title>
   <style>
     body { font-family: sans-serif; margin: 20px; }
     canvas { border: 1px solid #ccc; margin-bottom: 10px; }
@@ -79,7 +79,6 @@
     const now = performance.now();
     const start = now - DISPLAY_DURATION;
 
-    // Draw waveform
     ctx.beginPath();
     pulseWave.forEach((p, i) => {
       const x = ((p.time - start) / DISPLAY_DURATION) * canvas.width;
@@ -100,20 +99,6 @@
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, 2 * Math.PI);
       ctx.fillStyle = "red";
-      ctx.fill();
-    });
-
-    // Draw detected peaks
-    const peaks = findPeaks();
-    peaks.forEach(peakTime => {
-      if (peakTime < start || peakTime > now) return;
-      const val = interpolatePulseValue(peakTime);
-      if (val === null) return;
-      const x = ((peakTime - start) / DISPLAY_DURATION) * canvas.width;
-      const y = canvas.height - val;
-      ctx.beginPath();
-      ctx.arc(x, y, 4, 0, 2 * Math.PI);
-      ctx.fillStyle = "green";
       ctx.fill();
     });
 
