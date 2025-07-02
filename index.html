@@ -5,7 +5,7 @@
 <title>Pulse Throb Monitor</title>
 <style>
   body { font-family: sans-serif; margin: 20px; }
-  canvas { border: 1px solid #ccc; margin-bottom: 10px; }
+  canvas { border: 1px solid #ccc; margin-bottom: 10px; display: block; }
   button, label { margin: 5px; }
   .stats { margin-top: 10px; }
 </style>
@@ -14,15 +14,17 @@
 
 <h1>Pulse Throb Monitor (Simulated)</h1>
 
-<!-- Pulse waveform canvas -->
-<canvas id="pulseCanvas" width="800" height="200"></canvas><br>
+<!-- Pulse Waveform -->
+<canvas id="pulseCanvas" width="800" height="200"></canvas>
 
-<!-- Rose plot -->
-<canvas id="phaseHistogramCanvas" width="300" height="300"></canvas>
-<!-- Cross correlation -->
-<canvas id="crossCorrelationCanvas" width="300" height="150"></canvas>
-<!-- Phase scatter plot -->
-<canvas id="phaseScatterCanvas" width="300" height="300"></canvas>
+<!-- Phase Histogram -->
+<canvas id="phaseHistogramCanvas" width="400" height="200"></canvas>
+
+<!-- Cross Correlation -->
+<canvas id="crossCorrelationCanvas" width="400" height="200"></canvas>
+
+<!-- Phase Scatter Plot -->
+<canvas id="phaseScatterCanvas" width="400" height="200"></canvas>
 
 <br>
 
@@ -42,7 +44,8 @@
 
 <script>
 (() => {
-  // Canvas and contexts
+  // Get elements and contexts
+  const toggleAllBtn = document.getElementById("toggleAllBtn");
   const pulseCanvas = document.getElementById("pulseCanvas");
   const pulseCtx = pulseCanvas.getContext("2d");
 
@@ -55,17 +58,17 @@
   const phaseScatterCanvas = document.getElementById("phaseScatterCanvas");
   const phaseScatterCtx = phaseScatterCanvas.getContext("2d");
 
-  // Controls and displays
   const startBtn = document.getElementById("startBtn");
   const pauseBtn = document.getElementById("pauseBtn");
   const resumeBtn = document.getElementById("resumeBtn");
   const stopBtn = document.getElementById("stopBtn");
   const throbBtn = document.getElementById("throbBtn");
+
   const timerDisplay = document.getElementById("timer");
   const metricsDisplay = document.getElementById("metricsDisplay");
-  const toggleAllBtn = document.getElementById("toggleAllBtn");
 
   // Variables
+  let displayAll = true;  // Controls visibility of stats, markings & waveform
   let pulseWave = [];
   let throbs = [];
   let recordingStartTime = null;
@@ -75,9 +78,6 @@
   let animationId = null;
   let lastSampleTime = 0;
 
-  // Toggle flag
-  let displayAll = true;
-
   // Constants for waveform simulation
   const DISPLAY_DURATION = 20000; // 20 seconds window on canvas
   const SAMPLE_INTERVAL = 20; // 20 ms per sample
@@ -85,7 +85,7 @@
   const AMPLITUDE = 50;
   const FREQ = 1.2; // frequency in Hz (approx 72 bpm)
 
-  // Simulate pulse waveform (sine wave + noise)
+  // Simulate waveform by generating sine wave samples
   function simulatePulse() {
     const now = performance.now();
     if (now - lastSampleTime >= SAMPLE_INTERVAL) {
@@ -100,17 +100,23 @@
     pulseWave = pulseWave.filter(p => p.time >= cutoff);
   }
 
+  // Clear all canvases helper
+  function clearAllCanvases() {
+    pulseCtx.clearRect(0, 0, pulseCanvas.width, pulseCanvas.height);
+    phaseHistCtx.clearRect(0, 0, phaseHistogramCanvas.width, phaseHistogramCanvas.height);
+    crossCorrCtx.clearRect(0, 0, crossCorrelationCanvas.width, crossCorrelationCanvas.height);
+    phaseScatterCtx.clearRect(0, 0, phaseScatterCanvas.width, phaseScatterCanvas.height);
+  }
+
   // Draw waveform, throbs, peaks
   function draw() {
-    simulatePulse();
-
-    pulseCtx.clearRect(0, 0, pulseCanvas.width, pulseCanvas.height);
-
     if (!displayAll) {
-      // If hidden, do not draw anything
-      if (isRecording && !isPaused) animationId = requestAnimationFrame(draw);
+      clearAllCanvases();
       return;
     }
+
+    simulatePulse();
+    pulseCtx.clearRect(0, 0, pulseCanvas.width, pulseCanvas.height);
 
     const now = performance.now();
     const start = now - DISPLAY_DURATION;
@@ -127,37 +133,41 @@
     pulseCtx.lineWidth = 2;
     pulseCtx.stroke();
 
-    // Draw throbs (red circles)
-    throbs.forEach(throb => {
-      if (throb.time < start || throb.time > now) return;
-      const val = interpolatePulseValue(throb.time);
-      if (val === null) return;
-      const x = ((throb.time - start) / DISPLAY_DURATION) * pulseCanvas.width;
-      const y = pulseCanvas.height - val;
-      pulseCtx.beginPath();
-      pulseCtx.arc(x, y, 5, 0, 2 * Math.PI);
-      pulseCtx.fillStyle = "red";
-      pulseCtx.fill();
-    });
+    if (displayAll) {
+      // Draw throbs (red circles)
+      throbs.forEach(throb => {
+        if (throb.time < start || throb.time > now) return;
+        const val = interpolatePulseValue(throb.time);
+        if (val === null) return;
+        const x = ((throb.time - start) / DISPLAY_DURATION) * pulseCanvas.width;
+        const y = pulseCanvas.height - val;
+        pulseCtx.beginPath();
+        pulseCtx.arc(x, y, 5, 0, 2 * Math.PI);
+        pulseCtx.fillStyle = "red";
+        pulseCtx.fill();
+      });
 
-    // Draw peaks (green circles)
-    const peaks = findPeaks();
-    peaks.forEach(peakTime => {
-      if (peakTime < start || peakTime > now) return;
-      const val = interpolatePulseValue(peakTime);
-      if (val === null) return;
-      const x = ((peakTime - start) / DISPLAY_DURATION) * pulseCanvas.width;
-      const y = pulseCanvas.height - val;
-      pulseCtx.beginPath();
-      pulseCtx.arc(x, y, 4, 0, 2 * Math.PI);
-      pulseCtx.fillStyle = "green";
-      pulseCtx.fill();
-    });
+      // Draw peaks (green circles)
+      const peaks = findPeaks();
+      peaks.forEach(peakTime => {
+        if (peakTime < start || peakTime > now) return;
+        const val = interpolatePulseValue(peakTime);
+        if (val === null) return;
+        const x = ((peakTime - start) / DISPLAY_DURATION) * pulseCanvas.width;
+        const y = pulseCanvas.height - val;
+        pulseCtx.beginPath();
+        pulseCtx.arc(x, y, 4, 0, 2 * Math.PI);
+        pulseCtx.fillStyle = "green";
+        pulseCtx.fill();
+      });
+    }
 
-    if (isRecording && !isPaused) animationId = requestAnimationFrame(draw);
+    if (isRecording && !isPaused) {
+      animationId = requestAnimationFrame(draw);
+    }
   }
 
-  // Interpolate pulse value at time t
+  // Linear interpolate pulse value at time t
   function interpolatePulseValue(t) {
     for (let i = 1; i < pulseWave.length; i++) {
       if (pulseWave[i].time >= t) {
@@ -170,7 +180,7 @@
     return null;
   }
 
-  // Detect peaks (local maxima)
+  // Detect peaks by local maxima
   function findPeaks() {
     const peaks = [];
     const values = pulseWave.map(p => p.value);
@@ -187,6 +197,7 @@
     const peaks = findPeaks();
     if (peaks.length < 2) return null;
 
+    // Find peaks surrounding time t
     let prevPeak = null, nextPeak = null;
     for (let i = 0; i < peaks.length - 1; i++) {
       if (peaks[i] <= t && peaks[i + 1] > t) {
@@ -195,6 +206,7 @@
         break;
       }
     }
+
     if (prevPeak === null || nextPeak === null) return null;
 
     const phase = 2 * Math.PI * (t - prevPeak) / (nextPeak - prevPeak);
@@ -218,321 +230,282 @@
     return mean;
   }
 
-  // Circular variance (0 to 1)
+  // Mean resultant length (r)
+  function resultantLength(angles) {
+    if (angles.length === 0) return null;
+    const sumSin = angles.reduce((acc, a) => acc + Math.sin(a), 0);
+    const sumCos = angles.reduce((acc, a) => acc + Math.cos(a), 0);
+    return Math.sqrt(sumSin * sumSin + sumCos * sumCos) / angles.length;
+  }
+
+  // Rayleigh test p-value approximation
+  function rayleighPValue(r, n) {
+    if (n === 0) return null;
+    const R = r * n;
+    const p = Math.exp(-R * R / n) * (1 + (2 * R * R - R * R * R * R) / (4 * n) - (24 * R * R - 132 * R * R * R * R + 76 * R * R * R * R * R * R - 9 * R * R * R * R * R * R * R * R) / (288 * n * n));
+    return p;
+  }
+
+  // Calculate Phase Locking Value (PLV) (same as resultant length)
+  function calculatePLV(angles) {
+    return resultantLength(angles);
+  }
+
+  // Calculate mean vector angle in degrees for display
+  function meanVectorAngleDeg(angles) {
+    const mean = circularMean(angles);
+    if (mean === null) return null;
+    return (mean * 180 / Math.PI).toFixed(2);
+  }
+
+  // Calculate circular variance (1 - r)
   function circularVariance(angles) {
-    if (angles.length === 0) return null;
-    const n = angles.length;
-    const R = Math.sqrt(
-      Math.pow(angles.reduce((acc, a) => acc + Math.cos(a), 0), 2) +
-      Math.pow(angles.reduce((acc, a) => acc + Math.sin(a), 0), 2)
-    ) / n;
-    return 1 - R;
+    const r = resultantLength(angles);
+    return r === null ? null : 1 - r;
   }
 
-  // Rayleigh test p-value for non-uniformity
-  function rayleighTest(angles) {
-    if (angles.length === 0) return null;
-    const n = angles.length;
-    const R = Math.sqrt(
-      Math.pow(angles.reduce((acc, a) => acc + Math.cos(a), 0), 2) +
-      Math.pow(angles.reduce((acc, a) => acc + Math.sin(a), 0), 2)
-    );
-    const z = (R * R) / n;
-    return Math.exp(-z);
-  }
+  // Compute cross-correlation between throb timings and pulse waveform (simple)
+  function computeCrossCorrelation() {
+    // For simplicity, cross-corr between throb signal (impulses) and pulse values
+    if (throbs.length === 0 || pulseWave.length === 0) return null;
 
-  // Calculate PLV and related stats from throbs
-  function calculatePLV() {
-    // Assign phases to each throb:
-    throbs.forEach(throb => {
-      throb.phase = calculatePhase(throb.time);
+    // Build throb impulse train aligned with pulseWave times
+    const impulses = pulseWave.map(p => {
+      return throbs.some(throb => Math.abs(throb.time - p.time) < 50) ? 1 : 0;
     });
 
-    const validPhases = throbs.filter(t => t.phase !== null).map(t => t.phase);
-    if (validPhases.length === 0) return null;
+    const pulseVals = pulseWave.map(p => p.value);
 
-    // PLV is the length of the mean resultant vector of phase angles
-    const sumSin = validPhases.reduce((acc, a) => acc + Math.sin(a), 0);
-    const sumCos = validPhases.reduce((acc, a) => acc + Math.cos(a), 0);
-    const R = Math.sqrt(sumSin * sumSin + sumCos * sumCos) / validPhases.length;
+    // Calculate normalized cross-correlation at zero lag
+    const meanPulse = pulseVals.reduce((a, b) => a + b, 0) / pulseVals.length;
+    const meanImp = impulses.reduce((a, b) => a + b, 0) / impulses.length;
 
-    const meanPhase = circularMean(validPhases);
-    const variance = circularVariance(validPhases);
-    const pVal = rayleighTest(validPhases);
+    let numerator = 0;
+    let denomPulse = 0;
+    let denomImp = 0;
 
-    return {
-      plv: R,
-      meanPhase,
-      variance,
-      rayleighP: pVal,
-      count: validPhases.length
-    };
+    for (let i = 0; i < pulseVals.length; i++) {
+      numerator += (pulseVals[i] - meanPulse) * (impulses[i] - meanImp);
+      denomPulse += (pulseVals[i] - meanPulse) ** 2;
+      denomImp += (impulses[i] - meanImp) ** 2;
+    }
+    if (denomPulse === 0 || denomImp === 0) return null;
+
+    return numerator / Math.sqrt(denomPulse * denomImp);
   }
 
-  // Draw rose plot (phase histogram)
+  // Draw rose plot of phases
   function drawRosePlot() {
     phaseHistCtx.clearRect(0, 0, phaseHistogramCanvas.width, phaseHistogramCanvas.height);
+    if (!displayAll) return;
 
-    if (!displayAll || throbs.length === 0) return;
+    const phases = throbs
+      .map(throb => calculatePhase(throb.time))
+      .filter(p => p !== null);
 
+    if (phases.length === 0) return;
+
+    const bins = 12;
+    const counts = new Array(bins).fill(0);
+    phases.forEach(p => {
+      let bin = Math.floor((p / (2 * Math.PI)) * bins);
+      if (bin === bins) bin = 0;
+      counts[bin]++;
+    });
+
+    const maxCount = Math.max(...counts);
     const centerX = phaseHistogramCanvas.width / 2;
     const centerY = phaseHistogramCanvas.height / 2;
-    const radius = Math.min(centerX, centerY) - 20;
-    const bins = 16;
-    const binCounts = new Array(bins).fill(0);
+    const radius = Math.min(centerX, centerY) - 10;
 
-    // Count throbs in phase bins
-    throbs.forEach(t => {
-      if (t.phase !== null) {
-        let bin = Math.floor((t.phase / (2 * Math.PI)) * bins);
-        bin = bin >= bins ? bins - 1 : bin;
-        binCounts[bin]++;
-      }
-    });
-
-    const maxCount = Math.max(...binCounts, 1);
-
-    // Draw bins as bars around circle
+    // Draw rose plot sectors
     for (let i = 0; i < bins; i++) {
-      const angle = (i / bins) * 2 * Math.PI;
-      const length = (binCounts[i] / maxCount) * radius;
+      const startAngle = (i * 2 * Math.PI) / bins;
+      const endAngle = ((i + 1) * 2 * Math.PI) / bins;
+      const r = (counts[i] / maxCount) * radius;
 
       phaseHistCtx.beginPath();
-      phaseHistCtx.moveTo(centerX + Math.cos(angle) * 30, centerY + Math.sin(angle) * 30);
-      phaseHistCtx.lineTo(centerX + Math.cos(angle) * (30 + length), centerY + Math.sin(angle) * (30 + length));
-      phaseHistCtx.lineWidth = 8;
-      phaseHistCtx.strokeStyle = "purple";
+      phaseHistCtx.moveTo(centerX, centerY);
+      phaseHistCtx.arc(centerX, centerY, r, startAngle, endAngle);
+      phaseHistCtx.closePath();
+      phaseHistCtx.fillStyle = "rgba(0, 0, 255, 0.5)";
+      phaseHistCtx.fill();
+      phaseHistCtx.strokeStyle = "blue";
       phaseHistCtx.stroke();
     }
-
-    // Draw outer circle
-    phaseHistCtx.beginPath();
-    phaseHistCtx.arc(centerX, centerY, radius + 30, 0, 2 * Math.PI);
-    phaseHistCtx.strokeStyle = "#aaa";
-    phaseHistCtx.lineWidth = 1;
-    phaseHistCtx.stroke();
-
-    // Center dot
-    phaseHistCtx.beginPath();
-    phaseHistCtx.arc(centerX, centerY, 5, 0, 2 * Math.PI);
-    phaseHistCtx.fillStyle = "black";
-    phaseHistCtx.fill();
   }
 
-  // Draw cross correlation plot (throbs vs pulse peaks)
+  // Draw cross correlation plot (simple bar)
   function drawCrossCorrelation() {
     crossCorrCtx.clearRect(0, 0, crossCorrelationCanvas.width, crossCorrelationCanvas.height);
+    if (!displayAll) return;
 
-    if (!displayAll || throbs.length === 0) return;
+    const corr = computeCrossCorrelation();
+    if (corr === null) return;
 
-    // Cross-correlation time lags between throbs and pulse peaks
-    const peaks = findPeaks();
-    const lags = [];
+    const width = crossCorrelationCanvas.width;
+    const height = crossCorrelationCanvas.height;
 
-    throbs.forEach(t => {
-      peaks.forEach(p => {
-        const lag = (t.time - p);
-        if (lag > -5000 && lag < 5000) lags.push(lag);
-      });
-    });
+    crossCorrCtx.fillStyle = "black";
+    crossCorrCtx.font = "16px sans-serif";
+    crossCorrCtx.fillText("Cross-Correlation (Throb vs Pulse) at lag=0", 10, 20);
 
-    // Histogram bins for lags (-5000 ms to 5000 ms)
-    const bins = 50;
-    const binSize = 10000 / bins; // ms per bin
-    const counts = new Array(bins).fill(0);
+    const barHeight = (corr + 1) / 2 * (height - 40); // normalize from [-1,1] to [0,height-40]
 
-    lags.forEach(lag => {
-      let bin = Math.floor((lag + 5000) / binSize);
-      if (bin >= 0 && bin < bins) counts[bin]++;
-    });
+    crossCorrCtx.fillStyle = corr > 0 ? "green" : "red";
+    crossCorrCtx.fillRect(width / 2 - 25, height - 20 - barHeight, 50, barHeight);
 
-    const maxCount = Math.max(...counts, 1);
+    crossCorrCtx.strokeRect(width / 2 - 25, height - 20 - (height - 40), 50, height - 40);
 
-    // Draw histogram bars
-    for (let i = 0; i < bins; i++) {
-      const x = (i / bins) * crossCorrelationCanvas.width;
-      const barHeight = (counts[i] / maxCount) * crossCorrelationCanvas.height;
-      crossCorrCtx.fillStyle = "orange";
-      crossCorrCtx.fillRect(x, crossCorrelationCanvas.height - barHeight, crossCorrelationCanvas.width / bins - 1, barHeight);
-    }
-
-    // Center line at zero lag
-    const zeroX = ((0 + 5000) / 10000) * crossCorrelationCanvas.width;
-    crossCorrCtx.strokeStyle = "black";
-    crossCorrCtx.beginPath();
-    crossCorrCtx.moveTo(zeroX, 0);
-    crossCorrCtx.lineTo(zeroX, crossCorrelationCanvas.height);
-    crossCorrCtx.stroke();
+    crossCorrCtx.fillStyle = "black";
+    crossCorrCtx.fillText(corr.toFixed(3), width / 2 - 15, height - 25 - barHeight);
   }
 
-  // Draw interactive phase scatter plot
+  // Draw phase scatter plot (throb phases)
   function drawPhaseScatter() {
     phaseScatterCtx.clearRect(0, 0, phaseScatterCanvas.width, phaseScatterCanvas.height);
+    if (!displayAll) return;
 
-    if (!displayAll || throbs.length === 0) return;
+    const phases = throbs
+      .map(throb => calculatePhase(throb.time))
+      .filter(p => p !== null);
 
-    const margin = 40;
-    const width = phaseScatterCanvas.width - margin * 2;
-    const height = phaseScatterCanvas.height - margin * 2;
+    if (phases.length === 0) return;
 
-    // Axes: time (ms since recording start) vs phase [0, 2π]
-    phaseScatterCtx.strokeStyle = "black";
-    phaseScatterCtx.beginPath();
-    // X axis
-    phaseScatterCtx.moveTo(margin, phaseScatterCanvas.height - margin);
-    phaseScatterCtx.lineTo(phaseScatterCanvas.width - margin, phaseScatterCanvas.height - margin);
-    // Y axis
-    phaseScatterCtx.moveTo(margin, margin);
-    phaseScatterCtx.lineTo(margin, phaseScatterCanvas.height - margin);
-    phaseScatterCtx.stroke();
+    const width = phaseScatterCanvas.width;
+    const height = phaseScatterCanvas.height;
 
-    // Labels
-    phaseScatterCtx.font = "12px Arial";
     phaseScatterCtx.fillStyle = "black";
-    phaseScatterCtx.fillText("Time (ms)", phaseScatterCanvas.width / 2, phaseScatterCanvas.height - 10);
-    phaseScatterCtx.save();
-    phaseScatterCtx.translate(10, phaseScatterCanvas.height / 2);
-    phaseScatterCtx.rotate(-Math.PI / 2);
-    phaseScatterCtx.fillText("Phase (rad)", 0, 0);
-    phaseScatterCtx.restore();
+    phaseScatterCtx.font = "16px sans-serif";
+    phaseScatterCtx.fillText("Phase Scatter Plot (Throb Phases)", 10, 20);
 
-    if (!recordingStartTime) return;
-
-    // Calculate relative times and plot points
-    const times = throbs.map(t => t.time - recordingStartTime);
-    const phases = throbs.map(t => t.phase);
-
-    const maxTime = Math.max(...times, 1);
-
-    for (let i = 0; i < throbs.length; i++) {
-      if (phases[i] === null) continue;
-      const x = margin + (times[i] / maxTime) * width;
-      const y = phaseScatterCanvas.height - margin - (phases[i] / (2 * Math.PI)) * height;
-
+    phases.forEach(p => {
+      const x = (p / (2 * Math.PI)) * width;
+      const y = height / 2 + (Math.random() - 0.5) * 30; // jitter for clarity
       phaseScatterCtx.beginPath();
-      phaseScatterCtx.arc(x, y, 4, 0, 2 * Math.PI);
-      phaseScatterCtx.fillStyle = "teal";
+      phaseScatterCtx.arc(x, y, 5, 0, 2 * Math.PI);
+      phaseScatterCtx.fillStyle = "purple";
       phaseScatterCtx.fill();
-    }
+    });
   }
 
-  // Update all metrics & redraw plots
+  // Update metrics display at bottom
   function updateMetrics() {
     if (!displayAll) {
       metricsDisplay.innerHTML = "";
       return;
     }
-    if (throbs.length === 0) {
-      metricsDisplay.innerHTML = "<em>No throbs recorded yet.</em>";
-      phaseHistCtx.clearRect(0, 0, phaseHistogramCanvas.width, phaseHistogramCanvas.height);
-      crossCorrCtx.clearRect(0, 0, crossCorrelationCanvas.width, crossCorrelationCanvas.height);
-      phaseScatterCtx.clearRect(0, 0, phaseScatterCanvas.width, phaseScatterCanvas.height);
+
+    const phases = throbs
+      .map(throb => calculatePhase(throb.time))
+      .filter(p => p !== null);
+
+    const n = phases.length;
+    if (n === 0) {
+      metricsDisplay.innerHTML = "<b>No throbs recorded yet.</b>";
       return;
     }
 
-    // Calculate PLV and stats
-    const stats = calculatePLV();
-    if (!stats) {
-      metricsDisplay.innerHTML = "<em>Not enough data for statistics.</em>";
-      return;
-    }
+    const r = resultantLength(phases);
+    const meanAngleDeg = meanVectorAngleDeg(phases);
+    const circVar = circularVariance(phases);
+    const plv = calculatePLV(phases);
+    const pValRaw = rayleighPValue(r, n);
 
-    const pValStr = stats.rayleighP < 0.0001 ? "<0.0001" : stats.rayleighP.toFixed(4);
+    // Format Rayleigh p-value
+    let rayleighPFormatted = "";
+    if (pValRaw === null) rayleighPFormatted = "N/A";
+    else if (pValRaw < 0.0001) rayleighPFormatted = "<0.0001";
+    else rayleighPFormatted = pValRaw.toFixed(4);
 
+    // Display stats nicely
     metricsDisplay.innerHTML = `
-      <strong>Overall Recording Stats</strong><br>
-      Number of throbs: ${stats.count}<br>
-      PLV (Phase Locking Value): ${stats.plv.toFixed(4)}<br>
-      Mean Phase (rad): ${stats.meanPhase.toFixed(4)}<br>
-      Circular Variance: ${stats.variance.toFixed(4)}<br>
-      Rayleigh p-value: ${pValStr}
+      <b>Throbs Recorded:</b> ${n} <br>
+      <b>Phase Locking Value (PLV):</b> ${plv.toFixed(4)} <br>
+      <b>Mean Phase Angle:</b> ${meanAngleDeg}° <br>
+      <b>Circular Variance:</b> ${circVar.toFixed(4)} <br>
+      <b>Rayleigh Test p-value:</b> ${rayleighPFormatted} <br>
+      <b>Cross Correlation:</b> ${computeCrossCorrelation()?.toFixed(4) ?? "N/A"}
     `;
-
-    // Draw rose plot
-    drawRosePlot();
-
-    // Draw cross correlation
-    drawCrossCorrelation();
-
-    // Draw phase scatter
-    drawPhaseScatter();
   }
 
   // Timer update
   function updateTimer() {
-    if (!recordingStartTime) return;
-    const elapsed = performance.now() - recordingStartTime;
-    const seconds = Math.floor(elapsed / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    timerDisplay.textContent = `${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    if (!recordingStartTime) {
+      timerDisplay.textContent = "00:00";
+      return;
+    }
+    const diff = (performance.now() - recordingStartTime) / 1000;
+    const minutes = Math.floor(diff / 60);
+    const seconds = Math.floor(diff % 60);
+    timerDisplay.textContent = `${minutes.toString().padStart(2,"0")}:${seconds.toString().padStart(2,"0")}`;
   }
 
-  // Start recording
+  // Button event handlers
   startBtn.onclick = () => {
     if (isRecording) return;
     isRecording = true;
     isPaused = false;
-    throbs.length = 0;
-    pulseWave.length = 0;
     recordingStartTime = performance.now();
-    updateTimer();
-    timerInterval = setInterval(updateTimer, 200);
-    draw();
+    throbs = [];
+    pulseWave = [];
+    lastSampleTime = 0;
+
     startBtn.disabled = true;
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
     stopBtn.disabled = false;
     throbBtn.disabled = false;
+
     updateMetrics();
+    updateTimer();
+    timerInterval = setInterval(updateTimer, 500);
+    draw();
   };
 
-  // Pause recording
   pauseBtn.onclick = () => {
     if (!isRecording || isPaused) return;
     isPaused = true;
-    clearInterval(timerInterval);
-    if (animationId) cancelAnimationFrame(animationId);
     pauseBtn.disabled = true;
     resumeBtn.disabled = false;
-    updateMetrics();
+    if (animationId) cancelAnimationFrame(animationId);
+    if (timerInterval) clearInterval(timerInterval);
   };
 
-  // Resume recording
   resumeBtn.onclick = () => {
     if (!isRecording || !isPaused) return;
     isPaused = false;
-    timerInterval = setInterval(updateTimer, 200);
-    draw();
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
-    updateMetrics();
+    updateTimer();
+    timerInterval = setInterval(updateTimer, 500);
+    draw();
   };
 
-  // Stop recording
   stopBtn.onclick = () => {
     if (!isRecording) return;
     isRecording = false;
     isPaused = false;
-    clearInterval(timerInterval);
-    if (animationId) cancelAnimationFrame(animationId);
+
     startBtn.disabled = false;
     pauseBtn.disabled = true;
     resumeBtn.disabled = true;
     stopBtn.disabled = true;
     throbBtn.disabled = true;
+
+    if (animationId) cancelAnimationFrame(animationId);
+    if (timerInterval) clearInterval(timerInterval);
+
     updateMetrics();
   };
 
-  // Mark a throb
   throbBtn.onclick = () => {
-    if (!isRecording) return;
-    const now = performance.now();
-    throbs.push({ time: now });
+    if (!isRecording || isPaused) return;
+    throbs.push({ time: performance.now() });
     updateMetrics();
   };
 
-  // Toggle all stats/markings/waveform visibility
+  // Toggle button event
   toggleAllBtn.onclick = () => {
     displayAll = !displayAll;
     toggleAllBtn.textContent = displayAll
@@ -540,20 +513,14 @@
       : "Show All Stats & Markings & Waveform";
 
     if (displayAll) {
-      // Show stats and redraw plots with current data
       updateMetrics();
-
-      // If recording is active and not paused, start drawing waveform loop again
       if (isRecording && !isPaused) {
         draw();
       }
     } else {
-      // Hide all visuals and clear canvases and stats
-      pulseCtx.clearRect(0, 0, pulseCanvas.width, pulseCanvas.height);
-      phaseHistCtx.clearRect(0, 0, phaseHistogramCanvas.width, phaseHistogramCanvas.height);
-      crossCorrCtx.clearRect(0, 0, crossCorrelationCanvas.width, crossCorrelationCanvas.height);
-      phaseScatterCtx.clearRect(0, 0, phaseScatterCanvas.width, phaseScatterCanvas.height);
+      clearAllCanvases();
       metricsDisplay.innerHTML = "";
+      if (animationId) cancelAnimationFrame(animationId);
     }
   };
 
