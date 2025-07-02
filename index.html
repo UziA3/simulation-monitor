@@ -195,7 +195,7 @@
           const bpmAtPeak = getBPMAtTime(priorPeak);
           const period = MS_PER_MIN / bpmAtPeak;
           const phase = ((delta % period) / period) * 2 * Math.PI;
-          results.push([throb, priorPeak, delta, phase]);
+          results.push([throb, priorPeak, delta, bpmAtPeak, phase]);
           deltas.push(delta);
           phases.push(phase);
         }
@@ -212,37 +212,23 @@
       const pVal = Math.exp(-Z);
       const meanBPM = (pulsePeaks.length / (timer / 60000)).toFixed(2);
 
-      let csv = `Recording: ${name}\nTotal Peaks: ${pulsePeaks.length}\nMean Pulse Rate: ${meanBPM} BPM\nRayleigh R: ${R.toFixed(4)}\nRayleigh p-value: ${pVal.toExponential(4)}\n\nThrob Time (ms), Prior Peak (ms), Delta (ms), Phase (rad)\n`;
+      let csv = `Recording: ${name}\nTotal Peaks: ${pulsePeaks.length}\nTotal Throbs: ${throbs.length}\nMean Pulse Rate: ${meanBPM} BPM\nRayleigh R: ${R.toFixed(4)}\nRayleigh p-value: ${pVal.toExponential(4)}\n\nThrob Time (ms), Prior Peak (ms), Delta (ms), BPM, Phase (rad)\n`;
       results.forEach(r => {
-        csv += `${r[0].toFixed(2)},${r[1].toFixed(2)},${r[2].toFixed(2)},${r[3].toFixed(4)}\n`;
+        csv += `${r[0].toFixed(2)},${r[1].toFixed(2)},${r[2].toFixed(2)},${r[3].toFixed(2)},${r[4].toFixed(4)}\n`;
       });
       return csv;
     }
 
-    function saveRecording() {
-      const name = recordingNameInput.value.trim();
-      if (!name) return alert("Please enter a name");
-
+    function saveRecording(name) {
       const csv = computeStats(name);
       const blob = new Blob([csv], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${name.replace(/\s+/g, "_")}_recording.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-
-      recordings.push(name);
-      updateRecordingList();
+      const entry = document.createElement("div");
+      entry.className = "recording";
+      entry.innerHTML = `<strong>${name}</strong> <a href="${url}" download="${name.replace(/\s+/g, "_")}_recording.csv">Download CSV</a>`;
+      recordingsList.appendChild(entry);
     }
 
-    function updateRecordingList() {
-      recordingsList.innerHTML = recordings
-        .map(name => `<div class="recording">${name}</div>`)
-        .join("");
-    }
-
-    // BUTTONS
     startBtn.onclick = () => {
       if (!recordingNameInput.value.trim()) return alert("Enter a name");
       isRecording = true;
@@ -250,7 +236,7 @@
       timer = 0;
       throbs = [];
       pulsePeaks = [];
-      pulseSchedule = schedulePulsePeaks(600000); // simulate 10 minutes ahead
+      pulseSchedule = schedulePulsePeaks(600000);
       startTime = Date.now();
       intervalId = setInterval(updateTimer, 30);
       startBtn.disabled = true;
@@ -283,7 +269,7 @@
       startBtn.disabled = false;
       recordingNameInput.disabled = false;
       pauseBtn.textContent = "Pause";
-      saveRecording();
+      saveRecording(recordingNameInput.value.trim());
     };
 
     markBtn.onclick = () => {
