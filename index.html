@@ -1,196 +1,407 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Migraine Throb Synchrony App</title>
-<style>
-  canvas {
-    border: 1px solid black;
-    display: block;
-    margin-bottom: 10px;
-  }
-  button {
-    margin: 4px;
-  }
-  .recordings-list {
-    margin-top: 10px;
-  }
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Migraine Throb Synchrony App</title>
+  <style>
+    canvas {
+      border: 1px solid black;
+      display: block;
+      margin-bottom: 10px;
+    }
+    button {
+      margin: 4px;
+    }
+    .recordings-list {
+      margin-top: 10px;
+    }
+  </style>
 </head>
 <body>
-<h1>Migraine Throb Synchrony App</h1>
-<canvas id="ecgCanvas" width="1000" height="200"></canvas>
-<div>
-  <button onclick="startRecording()">Start</button>
-  <button onclick="pauseResumeRecording()">Pause/Resume</button>
-  <button onclick="stopRecording()">Stop & Save</button>
-  <button onclick="markThrob()">Mark Throb</button>
-  <label><input type="checkbox" id="toggleDisplay" onchange="toggleWaveform()"> Show/Hide Waveform</label>
-  <div id="timer">00:00.00</div>
-</div>
-<div class="recordings-list" id="recordingsList"></div>
+  <h1>Migraine Throb Synchrony App</h1>
+  <canvas id="ecgCanvas" width="1000" height="200"></canvas>
+  <div>
+    <button onclick="startRecording()">Start</button>
+    <button onclick="pauseResumeRecording()">Pause/Resume</button>
+    <button onclick="stopRecording()">Stop & Save</button>
+    <button onclick="markThrob()">Mark Throb</button>
+    <label><input type="checkbox" id="toggleDisplay" onchange="toggleWaveform()"> Show/Hide Waveform</label>
+    <div id="timer">00:00.00</div>
+  </div>
+  <div class="recordings-list" id="recordingsList"></div>
+  <script>
+    const canvas = document.getElementById('ecgCanvas');
+    const ctx = canvas.getContext('2d');
+    const toggleDisplay = document.getElementById('toggleDisplay');
+    const timerDisplay = document.getElementById('timer');
 
-<script>
-  const canvas = document.getElementById('ecgCanvas');
-  const ctx = canvas.getContext('2d');
-  const toggleDisplay = document.getElementById('toggleDisplay');
-  const timerDisplay = document.getElementById('timer');
+    let startTime, timerInterval, isPaused = false, pauseStart, pausedDuration = 0;
+    let ecgData = [], rPeaks = [], throbs = [], bpm = 70, bpmChanges = [], phaseData = [];
+    let lastBpmChange = 0, recording = false;
+    const PTT = 200; // Pulse Transit Time in ms (for middle meningeal artery)
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+    const ecgBuffer = 5000; // ms
 
-  let startTime, timerInterval, isPaused = false, pauseStart, pausedDuration = 0;
-  let ecgData = [], rPeaks = [], throbs = [], bpm = 70, bpmChanges = [], phaseData = [];
-  let lastBpmChange = 0, recording = false;
-  const canvasWidth = canvas.width;
-  const canvasHeight = canvas.height;
-  const ecgBuffer = 5000; // ms
+    function generateECGWave(t, bpm) {
+      const beatInterval = 60000 / bpm;
+      const timeInBeat = t % beatInterval;
+      const phase = timeInBeat / beatInterval;
+      let value = 0;
+      value += Math.exp(-Math.pow((phase - 0.2) * 40, 2)) * 0.15; // P wave
+      value += Math.exp(-Math.pow((phase - 0.3) * 200, 2)) * 1.5;  // R peak
+      value -= Math.exp(-Math.pow((phase - 0.35) * 100, 2)) * 0.3; // S wave
+      value += Math.exp(-Math.pow((phase - 0.5) * 60, 2)) * 0.5;   // T wave
+      return value;
+    }
 
-  function generateECGWave(t, bpm) {
-    const beatInterval = 60000 / bpm;
-    const timeInBeat = t % beatInterval;
-    const phase = timeInBeat / beatInterval;
-    let value = 0;
-    value += Math.exp(-Math.pow((phase - 0.2) * 40, 2)) * 0.15; // P wave
-    value += Math.exp(-Math.pow((phase - 0.3) * 200, 2)) * 1.5;  // R peak
-    value -= Math.exp(-Math.pow((phase - 0.35) * 100, 2)) * 0.3; // S wave
-    value += Math.exp(-Math.pow((phase - 0.5) * 60, 2)) * 0.5;   // T wave
-    return value;
-  }
+    function updateTimer() {
+      const now = performance.now();
+      const elapsed = (now - startTime - pausedDuration) / 1000;
+      const minutes = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const seconds = (elapsed % 60).toFixed(2).padStart(5, '0');
+      timerDisplay.textContent = `${minutes}:${seconds}`;
+    }
 
-  function updateTimer() {
-    const now = performance.now();
-    const elapsed = (now - startTime - pausedDuration) / 1000;
-    const minutes = String(Math.floor(elapsed / 60)).padStart(2, '0');
-    const seconds = (elapsed % 60).toFixed(2).padStart(5, '0');
-    timerDisplay.textContent = `${minutes}:${seconds}`;
-  }
+    function scheduleNextBPMChange() {
+      const delay = Math.random() * 4000 + 3000;
+      setTimeout(() => {
+        bpm = Math.floor(Math.random() * 41) + 60;
+        lastBpmChange = performance.now();
+        bpmChanges.push({ time: lastBpmChange - startTime, bpm });
+        if (recording) scheduleNextBPMChange();
+      }, delay);
+    }
 
-  function scheduleNextBPMChange() {
-    const delay = Math.random() * 4000 + 3000;
-    setTimeout(() => {
-      bpm = Math.floor(Math.random() * 41) + 60;
-      lastBpmChange = performance.now();
-      bpmChanges.push({ time: lastBpmChange - startTime, bpm });
-      if (recording) scheduleNextBPMChange();
-    }, delay);
-  }
+    // Robust R peak detection: exactly one R peak per beat interval using bpm info
+    function detectRPeaks() {
+      rPeaks = [];
+      if (ecgData.length === 0) return;
 
-  function detectRPeaks() {
-    rPeaks = [];
-    const threshold = 0.2;  // <-- Lowered threshold here ONLY
-    for (let i = 1; i < ecgData.length - 1; i++) {
-      const prev = ecgData[i - 1].value;
-      const curr = ecgData[i].value;
-      const next = ecgData[i + 1].value;
-      if (curr > threshold && curr > prev && curr > next) {
-        rPeaks.push({ time: ecgData[i].time, bpm: getBPMAt(ecgData[i].time) });
+      // We'll segment ECG data into beat intervals based on bpmChanges timeline
+      // Because bpm can change over time, we segment accordingly
+      
+      let startIdx = 0;
+      let currentBpm = bpmChanges.length > 0 ? bpmChanges[0].bpm : bpm;
+      let nextChangeIdx = 1;
+
+      // To simplify, we'll iterate over ecgData and accumulate beats based on bpm at that time
+      
+      let lastRPeakTime = -Infinity;
+      const refractoryPeriod = 250; // ms refractory period to avoid double detections
+
+      for (let i = 0; i < ecgData.length; i++) {
+        const t = ecgData[i].time;
+        // Update current bpm if we passed a bpm change time
+        while (nextChangeIdx < bpmChanges.length && t >= bpmChanges[nextChangeIdx].time) {
+          currentBpm = bpmChanges[nextChangeIdx].bpm;
+          nextChangeIdx++;
+        }
+
+        const beatInterval = 60000 / currentBpm;
+
+        // Determine which beat segment this time belongs to:
+        // Beat index = floor(t / beatInterval)
+        // We'll collect samples per beat to find max value
+
+        // We'll do a sweep collecting max points per beat index:
+        // We'll do that after we collect all points, so instead let's first create an object mapping beatIdx to array of points
+
+        // For efficiency, we build a mapping of beatIdx -> maxPoint dynamically
+
+        // We can't do that easily inside this loop, so instead let's build a map first outside this function
       }
+
+      // So we need to rebuild this function more simply: 
+
+      // Instead, let's build a function that processes the entire ecgData and bpmChanges to find R peaks as max in each beat interval
+
+      rPeaks = findRPeaksFromECG(ecgData, bpmChanges);
+
     }
-  }
 
-  function getBPMAt(time) {
-    let bpmVal = bpm;
-    for (const change of bpmChanges) {
-      if (time >= change.time) bpmVal = change.bpm;
-      else break;
-    }
-    return bpmVal;
-  }
+    // Helper function to find R peaks as max ECG value in each beat interval, adjusting for bpm changes
+    function findRPeaksFromECG(data, bpmChanges) {
+      const peaks = [];
+      if (data.length === 0) return peaks;
 
-  function drawECG() {
-    if (!toggleDisplay.checked) return;
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      // bpmChanges sorted by time ascending, ensure that
+      bpmChanges.sort((a,b) => a.time - b.time);
 
-    const currentTime = performance.now() - startTime - pausedDuration;
-    const fromTime = currentTime - ecgBuffer;
-    ctx.beginPath();
-    ctx.moveTo(0, canvasHeight / 2);
-    for (let i = 0; i < ecgData.length; i++) {
-      const x = ((ecgData[i].time - fromTime) / ecgBuffer) * canvasWidth;
-      const y = canvasHeight / 2 - ecgData[i].value * 80;
-      if (x >= 0 && x <= canvasWidth) ctx.lineTo(x, y);
-    }
-    ctx.stroke();
+      let bpmChangeIdx = 0;
+      let currentBpm = bpmChanges.length > 0 ? bpmChanges[0].bpm : bpm;
+      let nextChangeTime = bpmChanges.length > 1 ? bpmChanges[1].time : Infinity;
 
-    for (const peak of rPeaks) {
-      const x = ((peak.time - fromTime) / ecgBuffer) * canvasWidth;
-      if (x >= 0 && x <= canvasWidth) {
-        ctx.beginPath();
-        ctx.strokeStyle = 'red';
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvasHeight);
-        ctx.stroke();
+      // We'll iterate over beats from time 0 to last ecg time
+      const totalDuration = data[data.length -1].time;
+
+      let beatStartTime = 0;
+
+      // We'll store peaks as {time, bpm} — time is ecgData time of max in beat
+
+      while (beatStartTime < totalDuration) {
+        // Check if bpm change occurs in this beat interval
+        if (beatStartTime >= nextChangeTime) {
+          bpmChangeIdx++;
+          currentBpm = bpmChanges[bpmChangeIdx]?.bpm ?? currentBpm;
+          nextChangeTime = bpmChanges[bpmChangeIdx +1]?.time ?? Infinity;
+        }
+        const beatInterval = 60000 / currentBpm;
+        const beatEndTime = beatStartTime + beatInterval;
+
+        // Find max ECG value in [beatStartTime, beatEndTime)
+        // Linear scan ecgData within time window
+        let maxVal = -Infinity;
+        let maxTime = null;
+
+        // Since ecgData is ordered by time, we can use a binary search start index for optimization, but linear is fine for now
+        for (const point of data) {
+          if (point.time >= beatStartTime && point.time < beatEndTime) {
+            if (point.value > maxVal) {
+              maxVal = point.value;
+              maxTime = point.time;
+            }
+          }
+          if (point.time >= beatEndTime) break;
+        }
+
+        if (maxTime !== null) {
+          peaks.push({ time: maxTime, bpm: currentBpm });
+        }
+        beatStartTime = beatEndTime;
       }
+
+      return peaks;
     }
 
-    for (const throb of throbs) {
-      const x = ((throb - fromTime) / ecgBuffer) * canvasWidth;
-      if (x >= 0 && x <= canvasWidth) {
-        ctx.beginPath();
-        ctx.strokeStyle = 'green';
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvasHeight);
-        ctx.stroke();
+    function getBPMAt(time) {
+      let bpmVal = bpm;
+      for (const change of bpmChanges) {
+        if (time >= change.time) bpmVal = change.bpm;
+        else break;
       }
+      return bpmVal;
     }
-    ctx.strokeStyle = 'black';
-  }
 
-  function updateECG() {
-    if (!recording || isPaused) return;
-    const t = performance.now() - startTime - pausedDuration;
-    const value = generateECGWave(t, bpm);
-    ecgData.push({ time: t, value });
-    if (ecgData.length > 10000) ecgData.shift();
-    detectRPeaks();
-    drawECG();
-    updateTimer();
-  }
+    function drawECG() {
+      if (!toggleDisplay.checked) return;
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
 
-  function startRecording() {
-    recording = true;
-    isPaused = false;
-    pausedDuration = 0;
-    throbs = [];
-    ecgData = [];
-    rPeaks = [];
-    bpmChanges = [];
-    phaseData = [];
-    startTime = performance.now();
-    bpmChanges.push({ time: 0, bpm });
-    scheduleNextBPMChange();
-    clearInterval(timerInterval);
-    timerInterval = setInterval(updateECG, 20);
-  }
+      const currentTime = performance.now() - startTime - pausedDuration;
+      const fromTime = currentTime - ecgBuffer;
+      ctx.beginPath();
+      ctx.moveTo(0, canvasHeight / 2);
+      for (let i = 0; i < ecgData.length; i++) {
+        const x = ((ecgData[i].time - fromTime) / ecgBuffer) * canvasWidth;
+        const y = canvasHeight / 2 - ecgData[i].value * 80;
+        if (x >= 0 && x <= canvasWidth) ctx.lineTo(x, y);
+      }
+      ctx.stroke();
 
-  function pauseResumeRecording() {
-    if (!recording) return;
-    if (!isPaused) {
-      isPaused = true;
-      pauseStart = performance.now();
-    } else {
+      for (const peak of rPeaks) {
+        const x = ((peak.time - fromTime) / ecgBuffer) * canvasWidth;
+        if (x >= 0 && x <= canvasWidth) {
+          ctx.beginPath();
+          ctx.strokeStyle = 'red';
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvasHeight);
+          ctx.stroke();
+        }
+      }
+
+      for (const throb of throbs) {
+        const x = ((throb - fromTime) / ecgBuffer) * canvasWidth;
+        if (x >= 0 && x <= canvasWidth) {
+          ctx.beginPath();
+          ctx.strokeStyle = 'green';
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvasHeight);
+          ctx.stroke();
+        }
+      }
+      ctx.strokeStyle = 'black';
+    }
+
+    function updateECG() {
+      if (!recording || isPaused) return;
+      const t = performance.now() - startTime - pausedDuration;
+      const value = generateECGWave(t, bpm);
+      ecgData.push({ time: t, value });
+      if (ecgData.length > 10000) ecgData.shift();
+      detectRPeaks();
+      drawECG();
+      updateTimer();
+    }
+
+    function startRecording() {
+      recording = true;
       isPaused = false;
-      pausedDuration += performance.now() - pauseStart;
+      pausedDuration = 0;
+      throbs = [];
+      ecgData = [];
+      rPeaks = [];
+      bpmChanges = [];
+      phaseData = [];
+      startTime = performance.now();
+      bpmChanges.push({ time: 0, bpm });
+      scheduleNextBPMChange();
+      clearInterval(timerInterval);
+      timerInterval = setInterval(updateECG, 20);
     }
-  }
 
-  function stopRecording() {
-    recording = false;
-    clearInterval(timerInterval);
-    const name = prompt("Enter recording name:");
-    if (!name) return;
-    // Save summary or CSV here (left as-is)
-    alert(`Recording "${name}" saved.`);
-  }
+    function pauseResumeRecording() {
+      if (!recording) return;
+      if (!isPaused) {
+        isPaused = true;
+        pauseStart = performance.now();
+      } else {
+        isPaused = false;
+        pausedDuration += performance.now() - pauseStart;
+      }
+    }
 
-  function markThrob() {
-    if (!recording || isPaused) return;
-    const t = performance.now() - startTime - pausedDuration;
-    throbs.push(t);
-  }
+    function stopRecording() {
+      recording = false;
+      clearInterval(timerInterval);
+      const name = prompt("Enter recording name:");
+      if (!name) return;
+      const summary = computeStatistics();
+      recordings.push({ name, summary });
+      listRecordings();
+    }
 
-  function toggleWaveform() {
-    drawECG();
-  }
-</script>
+    function markThrob() {
+      if (!recording || isPaused) return;
+      const t = performance.now() - startTime - pausedDuration;
+      throbs.push(t);
+    }
+
+    function computeStatistics() {
+      phaseData = []; // reset phaseData for new stats
+
+      const data = throbs.map(throb => {
+        // Adjust throb by subtracting PTT to sync with R peaks
+        const adjustedThrob = throb - PTT;
+
+        // Find prior and next R peaks relative to adjusted throb time
+        const prior = rPeaks.filter(p => p.time <= adjustedThrob).slice(-1)[0];
+        const next = rPeaks.find(p => p.time > adjustedThrob);
+        const delta = prior ? throb - prior.time : null;
+        const interval = prior && next ? next.time - prior.time : null;
+        const phase = interval ? ((adjustedThrob - prior.time) / interval) * 2 * Math.PI : null;
+        if (phase != null) phaseData.push(phase);
+
+        return {
+          throbTime: throb,
+          priorPeakTime: prior?.time ?? '',
+          delta: delta ?? '',
+          bpm: prior?.bpm ?? '',
+          phase: phase?.toFixed(4) ?? ''
+        };
+      });
+
+      const R = calcRayleighR(phaseData);
+      const p = calcRayleighP(R, phaseData.length);
+      const PVL = R;
+      const meanAngle = calcMeanAngle(phaseData);
+      const deltaStd = std(data.map(d => d.delta).filter(d => d !== ''));
+
+      return {
+        data,
+        totalThrobs: throbs.length,
+        totalPeaks: rPeaks.length,
+        meanBPM: (rPeaks.length / (ecgData.length > 0 ? ecgData[ecgData.length - 1].time / 60000 : 1)).toFixed(2),
+        rayleighR: R.toFixed(4),
+        rayleighP: p < 0.001 ? '<0.001' : p.toFixed(3),
+        PVL: PVL.toFixed(4),
+        deltaStd: deltaStd.toFixed(2),
+        meanAngle: meanAngle.toFixed(4)
+      };
+    }
+
+    function listRecordings() {
+      const list = document.getElementById('recordingsList');
+      list.innerHTML = '';
+      recordings.forEach((rec, i) => {
+        const div = document.createElement('div');
+        div.innerHTML = `${rec.name} <button onclick="downloadCSV(${i})">Download CSV</button>`;
+        list.appendChild(div);
+      });
+    }
+
+    function downloadCSV(index) {
+      const rec = recordings[index];
+      let csv = `Recording Name,${rec.name}\n` +
+        `Total Throb Count,${rec.summary.totalThrobs}\n` +
+        `Total R Peak Count,${rec.summary.totalPeaks}\n` +
+        `Mean BPM,${rec.summary.meanBPM}\n` +
+        `Rayleigh R,${rec.summary.rayleighR}\n` +
+        `Rayleigh p-value,${rec.summary.rayleighP}\n` +
+        `Phase Vector Length (PVL),${rec.summary.PVL}\n` +
+        `Std Dev of Delta (throb – prior R),${rec.summary.deltaStd}\n` +
+        `Mean Vector Angle (radians),${rec.summary.meanAngle}\n\n`;
+
+      csv += "Throb Time (ms),Prior R Peak Time (ms),Delta (ms),BPM at prior R,Phase (radians)\n";
+
+      for (const row of rec.summary.data) {
+        csv += `${row.throbTime.toFixed(2)},${row.priorPeakTime.toFixed(2)},${row.delta.toFixed(2)},${row.bpm.toFixed(2)},${row.phase}\n`;
+      }
+
+      // Add PTT info at the end
+      csv += `\nPulse Transit Time (PTT) (ms),${PTT}\n`;
+
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${rec.name.replace(/\s+/g, '_')}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // Statistics helpers
+    function calcRayleighR(phases) {
+      if (phases.length === 0) return 0;
+      let sumSin = 0;
+      let sumCos = 0;
+      for (const p of phases) {
+        sumSin += Math.sin(p);
+        sumCos += Math.cos(p);
+      }
+      return Math.sqrt(sumSin * sumSin + sumCos * sumCos) / phases.length;
+    }
+
+    function calcRayleighP(R, n) {
+      if (n === 0) return 1;
+      return Math.exp(-n * R * R);
+    }
+
+    function calcMeanAngle(phases) {
+      if (phases.length === 0) return 0;
+      let sumSin = 0;
+      let sumCos = 0;
+      for (const p of phases) {
+        sumSin += Math.sin(p);
+        sumCos += Math.cos(p);
+      }
+      return Math.atan2(sumSin / phases.length, sumCos / phases.length);
+    }
+
+    function std(values) {
+      const mean = values.reduce((a,b) => a+b, 0) / values.length;
+      const variance = values.reduce((a,b) => a + (b - mean)**2, 0) / values.length;
+      return Math.sqrt(variance);
+    }
+
+    function toggleWaveform() {
+      if (!toggleDisplay.checked) ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    }
+
+    const recordings = [];
+
+  </script>
 </body>
 </html>
