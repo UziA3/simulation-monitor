@@ -1,289 +1,287 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Migraine Throb Synchrony App</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 20px;
-    }
     canvas {
-      border: 1px solid #000;
+      border: 1px solid black;
       display: block;
       margin-bottom: 10px;
     }
-    #controls button {
-      margin-right: 10px;
+    button {
+      margin: 4px;
     }
-    #recordings {
-      margin-top: 20px;
-    }
-    .hidden {
-      display: none;
-    }
-    table, th, td {
-      border: 1px solid black;
-      border-collapse: collapse;
-      padding: 4px;
+    .recordings-list {
+      margin-top: 10px;
     }
   </style>
 </head>
 <body>
   <h1>Migraine Throb Synchrony App</h1>
   <canvas id="ecgCanvas" width="1000" height="200"></canvas>
-  <div id="controls">
-    <button id="startBtn">Start</button>
-    <button id="pauseBtn" disabled>Pause</button>
-    <button id="resumeBtn" disabled>Resume</button>
-    <button id="stopBtn" disabled>Stop & Save</button>
-    <button id="throbBtn" disabled>Mark Throb</button>
-    <label><input type="checkbox" id="toggleView" checked> Show Waveform</label>
-    <span id="timer">00:00.00</span>
+  <div>
+    <button onclick="startRecording()">Start</button>
+    <button onclick="pauseResumeRecording()">Pause/Resume</button>
+    <button onclick="stopRecording()">Stop & Save</button>
+    <button onclick="markThrob()">Mark Throb</button>
+    <label><input type="checkbox" id="toggleDisplay" onchange="toggleWaveform()"> Show/Hide Waveform</label>
+    <div id="timer">00:00.00</div>
   </div>
-  <div id="recordings">
-    <h3>Saved Recordings</h3>
-    <ul id="recordingList"></ul>
-  </div>
-
+  <div class="recordings-list" id="recordingsList"></div>
   <script>
     const canvas = document.getElementById('ecgCanvas');
     const ctx = canvas.getContext('2d');
-    const startBtn = document.getElementById('startBtn');
-    const pauseBtn = document.getElementById('pauseBtn');
-    const resumeBtn = document.getElementById('resumeBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const throbBtn = document.getElementById('throbBtn');
-    const toggleView = document.getElementById('toggleView');
-    const timerEl = document.getElementById('timer');
-    const recordingList = document.getElementById('recordingList');
+    const toggleDisplay = document.getElementById('toggleDisplay');
+    const timerDisplay = document.getElementById('timer');
 
-    let ecgData = [];
-    let rPeaks = [];
-    let throbs = [];
-    let recording = false;
-    let paused = false;
-    let startTime = 0;
-    let pauseTime = 0;
-    let animationFrame;
-    let bpm = 70;
-    let nextBPMChange = 0;
-    let lastDrawTime = 0;
-    let savedRecordings = [];
+    let startTime, timerInterval, isPaused = false, pauseStart, pausedDuration = 0;
+    let ecgData = [], rPeaks = [], throbs = [], bpm = 70, bpmChanges = [], phaseData = [];
+    let lastBpmChange = 0, recording = false, canvasOffset = 0;
+    let recordings = [];
 
-    const waveformDuration = 5000; // 5 seconds
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+    const ecgBuffer = 5000; // ms
 
-    function generateECGPoint(t, bpm) {
+    function generateECGWave(t, bpm) {
       const beatInterval = 60000 / bpm;
-      const localT = t % beatInterval;
-      const normalizedT = localT / beatInterval;
-
+      const timeInBeat = t % beatInterval;
+      const phase = timeInBeat / beatInterval;
       let value = 0;
-      value += Math.exp(-Math.pow((normalizedT - 0.1) * 50, 2)) * 0.1; // P wave
-      value += Math.exp(-Math.pow((normalizedT - 0.25) * 150, 2)) * -1; // Q
-      value += Math.exp(-Math.pow((normalizedT - 0.3) * 100, 2)) * 2; // R peak
-      value += Math.exp(-Math.pow((normalizedT - 0.35) * 150, 2)) * -0.5; // S
-      value += Math.exp(-Math.pow((normalizedT - 0.5) * 50, 2)) * 0.3; // T wave
+      value += Math.exp(-Math.pow((phase - 0.2) * 40, 2)) * 0.15; // P wave
+      value += Math.exp(-Math.pow((phase - 0.3) * 200, 2)) * 1.5;  // R peak
+      value -= Math.exp(-Math.pow((phase - 0.35) * 100, 2)) * 0.3; // S wave
+      value += Math.exp(-Math.pow((phase - 0.5) * 60, 2)) * 0.5;   // T wave
       return value;
     }
 
-    function drawECG() {
+    function updateTimer() {
       const now = performance.now();
-      const elapsed = now - startTime;
-
-      if (!paused && recording) {
-        ecgData.push({ t: elapsed, value: generateECGPoint(elapsed, bpm) });
-
-        if (now >= nextBPMChange) {
-          bpm = 60 + Math.floor(Math.random() * 41);
-          nextBPMChange = now + (3000 + Math.random() * 4000);
-        }
-      }
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      if (toggleView.checked) {
-        ctx.beginPath();
-        const visibleStart = elapsed - waveformDuration;
-        let visible = ecgData.filter(p => p.t >= visibleStart);
-        visible.forEach((p, i) => {
-          const x = (p.t - visibleStart) / waveformDuration * canvas.width;
-          const y = canvas.height / 2 - p.value * 80;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.strokeStyle = 'black';
-        ctx.stroke();
-
-        // R peaks
-        rPeaks.forEach(peak => {
-          if (peak.t >= visibleStart) {
-            const x = (peak.t - visibleStart) / waveformDuration * canvas.width;
-            ctx.beginPath();
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, canvas.height);
-            ctx.strokeStyle = 'red';
-            ctx.stroke();
-          }
-        });
-
-        // Throbs
-        throbs.forEach(throb => {
-          if (throb >= visibleStart) {
-            const x = (throb - visibleStart) / waveformDuration * canvas.width;
-            ctx.beginPath();
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, canvas.height);
-            ctx.strokeStyle = 'green';
-            ctx.stroke();
-          }
-        });
-      }
-
-      updateRPeaks();
-      updateTimer(elapsed);
-      animationFrame = requestAnimationFrame(drawECG);
+      const elapsed = (now - startTime - pausedDuration) / 1000;
+      const minutes = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const seconds = (elapsed % 60).toFixed(2).padStart(5, '0');
+      timerDisplay.textContent = `${minutes}:${seconds}`;
     }
 
-    function updateRPeaks() {
-      const threshold = 1.5;
-      if (ecgData.length < 3) return;
-      const last = ecgData[ecgData.length - 2];
-      const prev = ecgData[ecgData.length - 3];
-      const current = ecgData[ecgData.length - 1];
-      if (prev.value < last.value && current.value < last.value && last.value > threshold) {
-        if (!rPeaks.some(p => Math.abs(p.t - last.t) < 250)) {
-          rPeaks.push({ t: last.t, bpm });
+    function scheduleNextBPMChange() {
+      const delay = Math.random() * 4000 + 3000;
+      setTimeout(() => {
+        bpm = Math.floor(Math.random() * 41) + 60;
+        lastBpmChange = performance.now();
+        bpmChanges.push({ time: lastBpmChange - startTime, bpm });
+        if (recording) scheduleNextBPMChange();
+      }, delay);
+    }
+
+    function detectRPeaks() {
+      rPeaks = [];
+      const threshold = 0.8;
+      for (let i = 1; i < ecgData.length - 1; i++) {
+        const prev = ecgData[i - 1].value;
+        const curr = ecgData[i].value;
+        const next = ecgData[i + 1].value;
+        if (curr > threshold && curr > prev && curr > next) {
+          rPeaks.push({ time: ecgData[i].time, bpm: getBPMAt(ecgData[i].time) });
         }
       }
     }
 
-    function updateTimer(ms) {
-      const sec = Math.floor(ms / 1000);
-      const min = Math.floor(sec / 60);
-      const s = (sec % 60).toString().padStart(2, '0');
-      const m = min.toString().padStart(2, '0');
-      const msPart = Math.floor(ms % 1000 / 10).toString().padStart(2, '0');
-      timerEl.textContent = `${m}:${s}.${msPart}`;
+    function getBPMAt(time) {
+      let bpmVal = bpm;
+      for (const change of bpmChanges) {
+        if (time >= change.time) bpmVal = change.bpm;
+        else break;
+      }
+      return bpmVal;
     }
 
-    function reset() {
+    function drawECG() {
+      if (!toggleDisplay.checked) return;
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+      const currentTime = performance.now() - startTime - pausedDuration;
+      const fromTime = currentTime - ecgBuffer;
+      ctx.beginPath();
+      ctx.moveTo(0, canvasHeight / 2);
+      for (let i = 0; i < ecgData.length; i++) {
+        const x = ((ecgData[i].time - fromTime) / ecgBuffer) * canvasWidth;
+        const y = canvasHeight / 2 - ecgData[i].value * 80;
+        if (x >= 0 && x <= canvasWidth) ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      for (const peak of rPeaks) {
+        const x = ((peak.time - fromTime) / ecgBuffer) * canvasWidth;
+        if (x >= 0 && x <= canvasWidth) {
+          ctx.beginPath();
+          ctx.strokeStyle = 'red';
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvasHeight);
+          ctx.stroke();
+        }
+      }
+
+      for (const throb of throbs) {
+        const x = ((throb - fromTime) / ecgBuffer) * canvasWidth;
+        if (x >= 0 && x <= canvasWidth) {
+          ctx.beginPath();
+          ctx.strokeStyle = 'green';
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvasHeight);
+          ctx.stroke();
+        }
+      }
+      ctx.strokeStyle = 'black';
+    }
+
+    function updateECG() {
+      if (!recording || isPaused) return;
+      const t = performance.now() - startTime - pausedDuration;
+      const value = generateECGWave(t, bpm);
+      ecgData.push({ time: t, value });
+      if (ecgData.length > 10000) ecgData.shift();
+      detectRPeaks();
+      drawECG();
+      updateTimer();
+    }
+
+    function startRecording() {
+      recording = true;
+      isPaused = false;
+      pausedDuration = 0;
+      throbs = [];
       ecgData = [];
       rPeaks = [];
-      throbs = [];
-      cancelAnimationFrame(animationFrame);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      timerEl.textContent = '00:00.00';
+      bpmChanges = [];
+      startTime = performance.now();
+      bpmChanges.push({ time: 0, bpm });
+      scheduleNextBPMChange();
+      clearInterval(timerInterval);
+      timerInterval = setInterval(updateECG, 20);
     }
 
-    function computeCSV(recordingName) {
-      const totalThrobs = throbs.length;
-      const totalPeaks = rPeaks.length;
-      const meanBPM = rPeaks.reduce((a, b) => a + b.bpm, 0) / (rPeaks.length || 1);
-
-      let rows = [], deltas = [], phases = [];
-
-      throbs.forEach(t => {
-        const prior = [...rPeaks].reverse().find(p => p.t <= t);
-        const next = rPeaks.find(p => p.t > t);
-        if (prior && next) {
-          const delta = t - prior.t;
-          const interval = next.t - prior.t;
-          const phase = 2 * Math.PI * (delta / interval);
-          deltas.push(delta);
-          phases.push(phase);
-          rows.push([t, prior.t, delta, prior.bpm, phase]);
-        } else {
-          rows.push([t, '', '', '', '']);
-        }
-      });
-
-      const R = phases.length ? Math.hypot(...[
-        phases.reduce((sum, p) => sum + Math.cos(p), 0),
-        phases.reduce((sum, p) => sum + Math.sin(p), 0)
-      ]) / phases.length : 0;
-      const z = phases.length * R * R;
-      const pVal = z < 50 ? Math.exp(-z).toFixed(3) : '<0.001';
-      const meanAngle = Math.atan2(
-        phases.reduce((sum, p) => sum + Math.sin(p), 0),
-        phases.reduce((sum, p) => sum + Math.cos(p), 0)
-      );
-      const stdDev = deltas.length ? Math.sqrt(deltas.reduce((s, x) => s + (x - (deltas.reduce((a,b) => a+b)/deltas.length))**2, 0) / deltas.length) : 0;
-
-      let csv = `Recording Name: ${recordingName}\nTotal Throb Count: ${totalThrobs}\nTotal Pulse Peak Count: ${totalPeaks}\nMean Pulse Rate (BPM): ${meanBPM.toFixed(1)}\nRayleigh R: ${R.toFixed(4)}\nRayleigh p-value: ${pVal}\nPVL: ${R.toFixed(4)}\nStd Dev of Delta (ms): ${stdDev.toFixed(2)}\nMean Vector Angle (rad): ${meanAngle.toFixed(4)}\n\n`;
-      csv += 'Throb Time (ms),Prior Pulse Peak Time (ms),Delta (ms),BPM at Prior Peak,Phase (radians)\n';
-      rows.forEach(row => {
-        csv += row.join(',') + '\n';
-      });
-      return csv;
+    function pauseResumeRecording() {
+      if (!recording) return;
+      if (!isPaused) {
+        isPaused = true;
+        pauseStart = performance.now();
+      } else {
+        isPaused = false;
+        pausedDuration += performance.now() - pauseStart;
+      }
     }
 
-    function downloadCSV(name, csv) {
+    function stopRecording() {
+      recording = false;
+      clearInterval(timerInterval);
+      const name = prompt("Enter recording name:");
+      if (!name) return;
+      const summary = computeStatistics();
+      recordings.push({ name, summary });
+      listRecordings();
+    }
+
+    function markThrob() {
+      if (!recording || isPaused) return;
+      const t = performance.now() - startTime - pausedDuration;
+      throbs.push(t);
+    }
+
+    function computeStatistics() {
+      const data = throbs.map(throb => {
+        const prior = rPeaks.filter(p => p.time <= throb).slice(-1)[0];
+        const next = rPeaks.find(p => p.time > throb);
+        const delta = prior ? throb - prior.time : null;
+        const interval = prior && next ? next.time - prior.time : null;
+        const phase = interval ? ((throb - prior.time) / interval) * 2 * Math.PI : null;
+        if (phase != null) phaseData.push(phase);
+        return {
+          throbTime: throb,
+          priorPeakTime: prior?.time ?? '',
+          delta: delta ?? '',
+          bpm: prior?.bpm ?? '',
+          phase: phase?.toFixed(4) ?? ''
+        };
+      });
+
+      const R = calcRayleighR(phaseData);
+      const p = calcRayleighP(R, phaseData.length);
+      const PVL = R;
+      const meanAngle = calcMeanAngle(phaseData);
+      const deltaStd = std(data.map(d => d.delta).filter(d => d !== ''));
+
+      return {
+        data,
+        totalThrobs: throbs.length,
+        totalPeaks: rPeaks.length,
+        meanBPM: (rPeaks.length / (ecgData[ecgData.length - 1].time / 60000)).toFixed(2),
+        rayleighR: R.toFixed(4),
+        rayleighP: p < 0.001 ? '<0.001' : p.toFixed(3),
+        PVL: PVL.toFixed(4),
+        deltaStd: deltaStd.toFixed(2),
+        meanAngle: meanAngle.toFixed(4)
+      };
+    }
+
+    function listRecordings() {
+      const list = document.getElementById('recordingsList');
+      list.innerHTML = '';
+      recordings.forEach((rec, i) => {
+        const div = document.createElement('div');
+        div.innerHTML = `${rec.name} <button onclick="downloadCSV(${i})">Download CSV</button>`;
+        list.appendChild(div);
+      });
+    }
+
+    function downloadCSV(index) {
+      const rec = recordings[index];
+      let csv = `Recording Name,${rec.name}\nTotal Throb Count,${rec.summary.totalThrobs}\nTotal Pulse Peak Count,${rec.summary.totalPeaks}\nMean Pulse Rate (BPM),${rec.summary.meanBPM}\nRayleigh R,${rec.summary.rayleighR}\nRayleigh p-value,${rec.summary.rayleighP}\nPVL,${rec.summary.PVL}\nStd Dev of Deltas,${rec.summary.deltaStd}\nMean Vector Angle (radians),${rec.summary.meanAngle}\n\nThrob Time (ms),Prior R Peak Time (ms),Delta (ms),BPM,Phase (radians)\n`;
+      for (const row of rec.summary.data) {
+        csv += `${row.throbTime},${row.priorPeakTime},${row.delta},${row.bpm},${row.phase}\n`;
+      }
       const blob = new Blob([csv], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${name}.csv`;
+      a.download = `${rec.name}.csv`;
       a.click();
       URL.revokeObjectURL(url);
     }
 
-    startBtn.onclick = () => {
-      reset();
-      recording = true;
-      paused = false;
-      startTime = performance.now();
-      nextBPMChange = startTime + 3000;
-      startBtn.disabled = true;
-      pauseBtn.disabled = false;
-      stopBtn.disabled = false;
-      throbBtn.disabled = false;
+    function std(arr) {
+      const n = arr.length;
+      const mean = arr.reduce((a, b) => a + b, 0) / n;
+      return Math.sqrt(arr.map(x => (x - mean) ** 2).reduce((a, b) => a + b, 0) / n);
+    }
+
+    function calcRayleighR(phases) {
+      if (phases.length === 0) return 0;
+      let x = 0, y = 0;
+      for (const p of phases) {
+        x += Math.cos(p);
+        y += Math.sin(p);
+      }
+      return Math.sqrt(x ** 2 + y ** 2) / phases.length;
+    }
+
+    function calcRayleighP(R, n) {
+      return Math.exp(-n * R * R);
+    }
+
+    function calcMeanAngle(phases) {
+      let x = 0, y = 0;
+      for (const p of phases) {
+        x += Math.cos(p);
+        y += Math.sin(p);
+      }
+      return Math.atan2(y, x);
+    }
+
+    function toggleWaveform() {
       drawECG();
-    };
-
-    pauseBtn.onclick = () => {
-      paused = true;
-      pauseTime = performance.now();
-      pauseBtn.disabled = true;
-      resumeBtn.disabled = false;
-    };
-
-    resumeBtn.onclick = () => {
-      const now = performance.now();
-      const pauseDuration = now - pauseTime;
-      startTime += pauseDuration;
-      nextBPMChange += pauseDuration;
-      paused = false;
-      pauseBtn.disabled = false;
-      resumeBtn.disabled = true;
-    };
-
-    stopBtn.onclick = () => {
-      recording = false;
-      cancelAnimationFrame(animationFrame);
-      const name = prompt("Enter recording name:");
-      if (name) {
-        const csv = computeCSV(name);
-        const li = document.createElement('li');
-        li.textContent = name + ' ';
-        const btn = document.createElement('button');
-        btn.textContent = 'Download CSV';
-        btn.onclick = () => downloadCSV(name, csv);
-        li.appendChild(btn);
-        recordingList.appendChild(li);
-      }
-      startBtn.disabled = false;
-      pauseBtn.disabled = true;
-      resumeBtn.disabled = true;
-      stopBtn.disabled = true;
-      throbBtn.disabled = true;
-    };
-
-    throbBtn.onclick = () => {
-      if (recording && !paused) {
-        throbs.push(performance.now() - startTime);
-      }
-    };
+    }
   </script>
 </body>
 </html>
