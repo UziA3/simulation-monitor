@@ -2,18 +2,452 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Test Start Button</title>
+<title>Pulse Throb Monitor with Recording List & CSV Download</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 20px; }
+  canvas { border: 1px solid #ccc; display: block; margin-bottom: 10px; }
+  button, label, select, input { margin: 5px; }
+  .stats { margin-top: 10px; font-size: 14px; }
+  .recordings-list { margin-top: 20px; border-top: 1px solid #999; padding-top: 10px; }
+  .recording-item { margin-bottom: 8px; }
+  .recording-item input.name-input {
+    width: 180px;
+    padding: 3px;
+  }
+  .recording-item button {
+    margin-left: 8px;
+  }
+</style>
 </head>
 <body>
-<button id="startBtn">Start</button>
+
+<h1>Pulse Throb Monitor (Simulated)</h1>
+
+<canvas id="canvas" width="800" height="200"></canvas>
+
+<div>
+  <button id="startBtn">Start</button>
+  <button id="pauseBtn" disabled>Pause</button>
+  <button id="resumeBtn" disabled>Resume</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <button id="throbBtn" disabled>Mark Throb</button>
+  <button id="toggleAllBtn">Hide All Stats, Markings & Waveform</button>
+</div>
+
+<div>Timer: <span id="timer">00:00</span></div>
+
+<div class="stats" id="metricsDisplay"></div>
+
+<div class="recordings-list" id="recordingsList">
+  <h3>Saved Recordings</h3>
+  <div id="recordingsContainer">No recordings saved yet.</div>
+</div>
 
 <script>
 document.addEventListener("DOMContentLoaded", () => {
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
   const startBtn = document.getElementById("startBtn");
-  startBtn.addEventListener("click", () => {
-    alert("Start button clicked!");
+  const pauseBtn = document.getElementById("pauseBtn");
+  const resumeBtn = document.getElementById("resumeBtn");
+  const stopBtn = document.getElementById("stopBtn");
+  const throbBtn = document.getElementById("throbBtn");
+  const timerDisplay = document.getElementById("timer");
+  const metricsDisplay = document.getElementById("metricsDisplay");
+  const toggleAllBtn = document.getElementById("toggleAllBtn");
+  const recordingsContainer = document.getElementById("recordingsContainer");
+
+  let pulseWave = [];
+  let throbs = [];
+  let recordingStartTime = null;
+  let isRecording = false;
+  let isPaused = false;
+  let timerInterval = null;
+  let animationId = null;
+  let lastSampleTime = 0;
+  let allVisible = true;
+
+  const DISPLAY_DURATION = 20000; // 20 sec visible on canvas
+  const SAMPLE_INTERVAL = 20; // ms per sample
+  const BASELINE = 100;
+  const AMPLITUDE = 50;
+  const FREQ = 1.2; // Hz
+
+  const savedRecordings = [];
+  let selectedRecordingIndex = null;
+
+  function formatTimer(ms) {
+    const totalSeconds = Math.floor(ms / 1000);
+    const m = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+    const s = String(totalSeconds % 60).padStart(2, "0");
+    return `${m}:${s}`;
+  }
+
+  function formatMs(ms) {
+    return ms.toFixed(1);
+  }
+
+  function formatPValue(p) {
+    if (p < 0.0001) return "<0.0001";
+    return p.toFixed(4);
+  }
+
+  function simulatePulse() {
+    const now = performance.now();
+    if (now - lastSampleTime >= SAMPLE_INTERVAL) {
+      const t = now / 1000;
+      const noise = (Math.random() - 0.5) * 5;
+      const value = BASELINE + AMPLITUDE * Math.sin(2 * Math.PI * FREQ * t) + noise;
+      pulseWave.push({ time: now, value });
+      lastSampleTime = now;
+    }
+    const cutoff = performance.now() - 5 * 60 * 1000;
+    pulseWave = pulseWave.filter(p => p.time >= cutoff);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!allVisible) return;
+
+    let waveToDraw, throbsToDraw;
+
+    if (selectedRecordingIndex !== null) {
+      const rec = savedRecordings[selectedRecordingIndex];
+      waveToDraw = rec.pulseWave;
+      throbsToDraw = rec.throbs;
+    } else {
+      waveToDraw = pulseWave;
+      throbsToDraw = throbs;
+    }
+    if (!waveToDraw.length) return;
+
+    const now = selectedRecordingIndex !== null ? waveToDraw[waveToDraw.length - 1].time : performance.now();
+    const start = now - DISPLAY_DURATION;
+
+    ctx.beginPath();
+    waveToDraw.forEach((p, i) => {
+      if (p.time < start) return;
+      const x = ((p.time - start) / DISPLAY_DURATION) * canvas.width;
+      const y = canvas.height - p.value;
+      if (i === 0 || waveToDraw[i-1].time < start) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "blue";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    throbsToDraw.forEach(throb => {
+      if (throb.time < start || throb.time > now) return;
+      const val = interpolatePulseValueIn(waveToDraw, throb.time);
+      if (val === null) return;
+      const x = ((throb.time - start) / DISPLAY_DURATION) * canvas.width;
+      const y = canvas.height - val;
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, 2 * Math.PI);
+      ctx.fillStyle = "red";
+      ctx.fill();
+    });
+
+    const peaks = findPeaksIn(waveToDraw);
+    peaks.forEach(peakTime => {
+      if (peakTime < start || peakTime > now) return;
+      const val = interpolatePulseValueIn(waveToDraw, peakTime);
+      if (val === null) return;
+      const x = ((peakTime - start) / DISPLAY_DURATION) * canvas.width;
+      const y = canvas.height - val;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, 2 * Math.PI);
+      ctx.fillStyle = "green";
+      ctx.fill();
+    });
+
+    if (selectedRecordingIndex === null && isRecording && !isPaused) {
+      animationId = requestAnimationFrame(draw);
+    }
+  }
+
+  function interpolatePulseValueIn(waveArr, t) {
+    for (let i = 1; i < waveArr.length; i++) {
+      if (waveArr[i].time >= t) {
+        const p1 = waveArr[i - 1];
+        const p2 = waveArr[i];
+        const ratio = (t - p1.time) / (p2.time - p1.time);
+        return p1.value + ratio * (p2.value - p1.value);
+      }
+    }
+    return null;
+  }
+
+  function findPeaksIn(waveArr) {
+    const peaks = [];
+    const values = waveArr.map(p => p.value);
+    for (let i = 1; i < values.length - 1; i++) {
+      if (values[i] > values[i - 1] && values[i] > values[i + 1]) {
+        peaks.push(waveArr[i].time);
+      }
+    }
+    return peaks;
+  }
+
+  function calculatePhaseInRecording(t, pulseWaveRec) {
+    const peaks = findPeaksIn(pulseWaveRec);
+    if (peaks.length < 2) return null;
+
+    let prevPeak = null, nextPeak = null;
+    for (let i = 0; i < peaks.length - 1; i++) {
+      if (peaks[i] <= t && peaks[i + 1] > t) {
+        prevPeak = peaks[i];
+        nextPeak = peaks[i + 1];
+        break;
+      }
+    }
+    if (prevPeak === null || nextPeak === null) return null;
+
+    const phase = 2 * Math.PI * (t - prevPeak) / (nextPeak - prevPeak);
+    return normalizeAngle(phase);
+  }
+
+  function normalizeAngle(angle) {
+    let a = angle % (2 * Math.PI);
+    if (a < 0) a += 2 * Math.PI;
+    return a;
+  }
+
+  function circularMean(angles) {
+    if (angles.length === 0) return null;
+    const sumSin = angles.reduce((acc, a) => acc + Math.sin(a), 0);
+    const sumCos = angles.reduce((acc, a) => acc + Math.cos(a), 0);
+    let mean = Math.atan2(sumSin, sumCos);
+    mean = normalizeAngle(mean);
+    return mean;
+  }
+
+  function circularVariance(angles) {
+    if (angles.length === 0) return null;
+    const sumSin = angles.reduce((acc, a) => acc + Math.sin(a), 0);
+    const sumCos = angles.reduce((acc, a) => acc + Math.cos(a), 0);
+    const R = Math.sqrt(sumSin * sumSin + sumCos * sumCos) / angles.length;
+    return 1 - R;
+  }
+
+  function rayleighTest(angles) {
+    if (angles.length === 0) return null;
+    const n = angles.length;
+    const sumSin = angles.reduce((acc, a) => acc + Math.sin(a), 0);
+    const sumCos = angles.reduce((acc, a) => acc + Math.cos(a), 0);
+    const R = Math.sqrt(sumSin * sumSin + sumCos * sumCos) / n;
+    const Z = n * R * R;
+    // Approximate p-value
+    const p = Math.exp(-Z) * (1 + (2 * Z - Z * Z) / (4 * n) - (24 * Z - 132 * Z * Z + 76 * Z * Z * Z - 9 * Z * Z * Z * Z) / (288 * n * n));
+    return p;
+  }
+
+  function updateMetricsDisplay() {
+    let angles = [];
+    if (selectedRecordingIndex !== null) {
+      const rec = savedRecordings[selectedRecordingIndex];
+      angles = rec.throbs
+        .map(throb => calculatePhaseInRecording(throb.time, rec.pulseWave))
+        .filter(phase => phase !== null);
+    } else {
+      angles = throbs
+        .map(throb => calculatePhaseInRecording(throb.time, pulseWave))
+        .filter(phase => phase !== null);
+    }
+
+    if (angles.length === 0) {
+      metricsDisplay.innerHTML = "No throbs marked or not enough data.";
+      return;
+    }
+
+    const mean = circularMean(angles);
+    const variance = circularVariance(angles);
+    const pValue = rayleighTest(angles);
+
+    const meanDeg = (mean * 180 / Math.PI).toFixed(1);
+
+    metricsDisplay.innerHTML = `
+      <strong>Throb count:</strong> ${angles.length} <br />
+      <strong>Mean Phase:</strong> ${meanDeg}° <br />
+      <strong>Circular Variance:</strong> ${variance.toFixed(4)} <br />
+      <strong>Rayleigh p-value:</strong> ${formatPValue(pValue)} <br />
+    `;
+  }
+
+  function startRecording() {
+    if (isRecording) return;
+    console.log("Start button clicked!");
+    isRecording = true;
+    isPaused = false;
+    recordingStartTime = performance.now();
+    pulseWave = [];
+    throbs = [];
+    timerDisplay.textContent = "00:00";
+
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    resumeBtn.disabled = true;
+    stopBtn.disabled = false;
+    throbBtn.disabled = false;
+
+    lastSampleTime = 0;
+
+    timerInterval = setInterval(() => {
+      if (!isPaused) {
+        const elapsed = performance.now() - recordingStartTime;
+        timerDisplay.textContent = formatTimer(elapsed);
+      }
+    }, 200);
+
+    function loop() {
+      if (!isPaused) {
+        simulatePulse();
+      }
+      draw();
+      if (isRecording) {
+        animationId = requestAnimationFrame(loop);
+      }
+    }
+    loop();
+  }
+
+  function pauseRecording() {
+    if (!isRecording || isPaused) return;
+    isPaused = true;
+    pauseBtn.disabled = true;
+    resumeBtn.disabled = false;
+    throbBtn.disabled = true;
+  }
+
+  function resumeRecording() {
+    if (!isRecording || !isPaused) return;
+    isPaused = false;
+    pauseBtn.disabled = false;
+    resumeBtn.disabled = true;
+    throbBtn.disabled = false;
+  }
+
+  function stopRecording() {
+    if (!isRecording) return;
+    isRecording = false;
+    isPaused = false;
+    clearInterval(timerInterval);
+    cancelAnimationFrame(animationId);
+
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+    resumeBtn.disabled = true;
+    stopBtn.disabled = true;
+    throbBtn.disabled = true;
+
+    timerDisplay.textContent = "00:00";
+
+    if (pulseWave.length === 0) return;
+
+    const now = performance.now();
+    const recording = {
+      pulseWave: [...pulseWave],
+      throbs: [...throbs],
+      startTime: recordingStartTime,
+      duration: now - recordingStartTime,
+      name: `Recording ${savedRecordings.length + 1}`
+    };
+    savedRecordings.push(recording);
+    selectedRecordingIndex = savedRecordings.length - 1;
+
+    updateRecordingsList();
+    updateMetricsDisplay();
+  }
+
+  function markThrob() {
+    if (!isRecording || isPaused) return;
+    const now = performance.now();
+    throbs.push({ time: now });
+    updateMetricsDisplay();
+  }
+
+  function updateRecordingsList() {
+    if (savedRecordings.length === 0) {
+      recordingsContainer.innerHTML = "No recordings saved yet.";
+      return;
+    }
+
+    recordingsContainer.innerHTML = "";
+    savedRecordings.forEach((rec, i) => {
+      const div = document.createElement("div");
+      div.className = "recording-item";
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "recordingSelect";
+      radio.checked = i === selectedRecordingIndex;
+      radio.addEventListener("change", () => {
+        selectedRecordingIndex = i;
+        updateMetricsDisplay();
+        draw();
+      });
+
+      const inputName = document.createElement("input");
+      inputName.type = "text";
+      inputName.className = "name-input";
+      inputName.value = rec.name;
+      inputName.addEventListener("input", e => {
+        rec.name = e.target.value;
+      });
+
+      const exportBtn = document.createElement("button");
+      exportBtn.textContent = "Export CSV";
+      exportBtn.addEventListener("click", () => {
+        exportRecordingCSV(rec);
+      });
+
+      div.appendChild(radio);
+      div.appendChild(inputName);
+      div.appendChild(exportBtn);
+      recordingsContainer.appendChild(div);
+    });
+  }
+
+  function exportRecordingCSV(recording) {
+    const lines = [];
+    lines.push("time(ms),pulseValue,throbMarked");
+    const startTime = recording.pulseWave[0].time;
+
+    for (let i = 0; i < recording.pulseWave.length; i++) {
+      const p = recording.pulseWave[i];
+      const relTime = (p.time - startTime).toFixed(2);
+      const isThrob = recording.throbs.some(th => Math.abs(th.time - p.time) < SAMPLE_INTERVAL) ? 1 : 0;
+      lines.push(`${relTime},${p.value.toFixed(3)},${isThrob}`);
+    }
+
+    const csvContent = lines.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (recording.name || "recording") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  toggleAllBtn.addEventListener("click", () => {
+    allVisible = !allVisible;
+    toggleAllBtn.textContent = allVisible ? "Hide All Stats, Markings & Waveform" : "Show All Stats, Markings & Waveform";
+    draw();
   });
+
+  startBtn.onclick = startRecording;
+  pauseBtn.onclick = pauseRecording;
+  resumeBtn.onclick = resumeRecording;
+  stopBtn.onclick = stopRecording;
+  throbBtn.onclick = markThrob;
+
+  updateRecordingsList();
 });
 </script>
+
 </body>
 </html>
