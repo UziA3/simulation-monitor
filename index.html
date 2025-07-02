@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Pulse Throb Monitor with Recording List & CSV Download</title>
+<title>Pulse Throb Monitor</title>
 <style>
   body { font-family: Arial, sans-serif; margin: 20px; }
   canvas { border: 1px solid #ccc; display: block; margin-bottom: 10px; }
-  button, label, select, input { margin: 5px; }
+  button, input[type="text"] { margin: 5px; }
   .stats { margin-top: 10px; font-size: 14px; }
   .recordings-list { margin-top: 20px; border-top: 1px solid #999; padding-top: 10px; }
   .recording-item { margin-bottom: 8px; }
@@ -45,18 +45,23 @@
 
 <script>
 (() => {
+  // === Setup ===
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d");
+
+  // Buttons & displays
   const startBtn = document.getElementById("startBtn");
   const pauseBtn = document.getElementById("pauseBtn");
   const resumeBtn = document.getElementById("resumeBtn");
   const stopBtn = document.getElementById("stopBtn");
   const throbBtn = document.getElementById("throbBtn");
+  const toggleAllBtn = document.getElementById("toggleAllBtn");
+
   const timerDisplay = document.getElementById("timer");
   const metricsDisplay = document.getElementById("metricsDisplay");
-  const toggleAllBtn = document.getElementById("toggleAllBtn");
   const recordingsContainer = document.getElementById("recordingsContainer");
 
+  // === Variables ===
   let pulseWave = [];
   let throbs = [];
   let recordingStartTime = null;
@@ -67,19 +72,20 @@
   let lastSampleTime = 0;
   let allVisible = true;
 
-  const DISPLAY_DURATION = 20000; // 20 sec visible on canvas
-  const SAMPLE_INTERVAL = 20; // ms per sample
-  const BASELINE = 100;
-  const AMPLITUDE = 50;
-  const FREQ = 1.2; // Hz
-
-  // Saved recordings: each { name, pulseWave, throbs, startTime }
+  // Saved recordings array {name, pulseWave, throbs, startTime}
   const savedRecordings = [];
 
-  // Index of recording currently displayed, null = live
+  // Selected recording index (null = live)
   let selectedRecordingIndex = null;
 
-  // Util: format time in mm:ss
+  // === Constants ===
+  const DISPLAY_DURATION = 20000; // 20 seconds on canvas
+  const SAMPLE_INTERVAL = 20; // ms per simulated sample
+  const BASELINE = 100;
+  const AMPLITUDE = 50;
+  const FREQ = 1.2; // Hz for sine pulse wave
+
+  // === Utilities ===
   function formatTimer(ms) {
     const totalSeconds = Math.floor(ms / 1000);
     const m = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
@@ -87,18 +93,19 @@
     return `${m}:${s}`;
   }
 
-  // Util: format ms timestamp to 1 decimal place
-  function formatMs(ms) {
-    return ms.toFixed(1);
-  }
-
-  // Util: format p-value, 4 decimals or <0.0001
   function formatPValue(p) {
+    if (p === null) return "N/A";
     if (p < 0.0001) return "<0.0001";
     return p.toFixed(4);
   }
 
-  // Simulate pulse data acquisition
+  function normalizeAngle(angle) {
+    let a = angle % (2 * Math.PI);
+    if (a < 0) a += 2 * Math.PI;
+    return a;
+  }
+
+  // === Data simulation ===
   function simulatePulse() {
     const now = performance.now();
     if (now - lastSampleTime >= SAMPLE_INTERVAL) {
@@ -108,12 +115,12 @@
       pulseWave.push({ time: now, value });
       lastSampleTime = now;
     }
-    // Keep last 5 minutes of data only (garbage collect old data)
+    // Keep only last 5 minutes of data for memory safety
     const cutoff = performance.now() - 5 * 60 * 1000;
     pulseWave = pulseWave.filter(p => p.time >= cutoff);
   }
 
-  // Drawing function for live or selected recording
+  // === Drawing ===
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!allVisible) return;
@@ -128,25 +135,28 @@
       waveToDraw = pulseWave;
       throbsToDraw = throbs;
     }
+
     if (!waveToDraw.length) return;
 
-    const now = selectedRecordingIndex !== null ? waveToDraw[waveToDraw.length - 1].time : performance.now();
+    const now = selectedRecordingIndex !== null
+      ? waveToDraw[waveToDraw.length - 1].time
+      : performance.now();
     const start = now - DISPLAY_DURATION;
 
-    // Draw pulse waveform
+    // Draw waveform in blue
     ctx.beginPath();
     waveToDraw.forEach((p, i) => {
       if (p.time < start) return;
       const x = ((p.time - start) / DISPLAY_DURATION) * canvas.width;
       const y = canvas.height - p.value;
-      if (i === 0 || waveToDraw[i-1].time < start) ctx.moveTo(x, y);
+      if (i === 0 || waveToDraw[i - 1].time < start) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
     ctx.strokeStyle = "blue";
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Draw throbs in red
+    // Draw throbs as red circles
     throbsToDraw.forEach(throb => {
       if (throb.time < start || throb.time > now) return;
       const val = interpolatePulseValueIn(waveToDraw, throb.time);
@@ -178,7 +188,7 @@
     }
   }
 
-  // Linear interpolate pulse value at time t in given wave array
+  // Linear interpolation for pulse value at time t in waveArr
   function interpolatePulseValueIn(waveArr, t) {
     for (let i = 1; i < waveArr.length; i++) {
       if (waveArr[i].time >= t) {
@@ -191,7 +201,7 @@
     return null;
   }
 
-  // Find peaks times (local maxima) in wave array
+  // Find local maxima times in waveArr
   function findPeaksIn(waveArr) {
     const peaks = [];
     const values = waveArr.map(p => p.value);
@@ -203,7 +213,7 @@
     return peaks;
   }
 
-  // Compute phase of a time relative to pulse peaks
+  // Calculate phase of time t relative to pulse peaks in given wave
   function calculatePhaseInRecording(t, pulseWaveRec) {
     const peaks = findPeaksIn(pulseWaveRec);
     if (peaks.length < 2) return null;
@@ -222,12 +232,6 @@
     return normalizeAngle(phase);
   }
 
-  function normalizeAngle(angle) {
-    let a = angle % (2 * Math.PI);
-    if (a < 0) a += 2 * Math.PI;
-    return a;
-  }
-
   // Circular mean of array of angles in radians
   function circularMean(angles) {
     if (angles.length === 0) return null;
@@ -238,16 +242,7 @@
     return mean;
   }
 
-  // Circular variance of array of angles
-  function circularVariance(angles) {
-    if (angles.length === 0) return null;
-    const sumSin = angles.reduce((acc, a) => acc + Math.sin(a), 0);
-    const sumCos = angles.reduce((acc, a) => acc + Math.cos(a), 0);
-    const R = Math.sqrt(sumSin * sumSin + sumCos * sumCos) / angles.length;
-    return 1 - R;
-  }
-
-  // Phase locking value (PLV) - length of mean resultant vector
+  // Phase Locking Value (PLV)
   function phaseLockingValue(angles) {
     if (angles.length === 0) return null;
     const sumSin = angles.reduce((acc, a) => acc + Math.sin(a), 0);
@@ -256,23 +251,23 @@
     return R;
   }
 
-  // Rayleigh test for non-uniformity of circular data
-  // Returns p-value (approximate)
+  // Rayleigh test for uniformity of angles array
   function rayleighTest(angles) {
     if (angles.length === 0) return null;
     const n = angles.length;
     const R = phaseLockingValue(angles) * n;
-    const z = R * R / n;
-    const p = Math.exp(-z) * (1 + (2*z - z*z) / (4*n) - (24*z - 132*z*z + 76*z*z*z - 9*z*z*z*z) / (288 * n*n));
+    const z = (R * R) / n;
+    const p = Math.exp(-z) * (1 + (2 * z - z * z) / (4 * n) - (24 * z * z) / (288 * n * n));
     return p;
   }
 
-  // Generate CSV string for a recording (pulseWave + throbs + stats)
-  function generateCSV(rec) {
-    const lines = [];
-    lines.push("Throb Index,Throb Time (ms),Throb Time (s),Phase (rad),Pulse Value");
-    const pulseWaveRec = rec.pulseWave;
-    const throbsRec = rec.throbs;
+  // Generate CSV string for recording
+  function generateCSV(recording) {
+    const lines = [
+      "Index,Time(ms),Time(s),Phase(rad),Pulse Value",
+    ];
+    const pulseWaveRec = recording.pulseWave;
+    const throbsRec = recording.throbs;
 
     throbsRec.forEach((throb, i) => {
       const phase = calculatePhaseInRecording(throb.time, pulseWaveRec);
@@ -280,7 +275,6 @@
       lines.push(`${i + 1},${throb.time.toFixed(1)},${(throb.time / 1000).toFixed(3)},${phase !== null ? phase.toFixed(3) : "NaN"},${val !== null ? val.toFixed(2) : "NaN"}`);
     });
 
-    // Add stats summary
     lines.push("");
     lines.push("Stats");
     lines.push(`Number of Throbs,${throbsRec.length}`);
@@ -314,6 +308,7 @@
       input.type = "text";
       input.value = rec.name;
       input.classList.add("name-input");
+      input.title = "Edit recording name";
       input.addEventListener("change", () => {
         rec.name = input.value.trim() || `Recording ${index + 1}`;
       });
@@ -322,21 +317,23 @@
       // Show button
       const showBtn = document.createElement("button");
       showBtn.textContent = "Show";
+      showBtn.title = "View waveform and throbs";
       showBtn.addEventListener("click", () => {
         selectedRecordingIndex = index;
         isRecording = false;
         isPaused = false;
-        cancelAnimationFrame(animationId);
         clearInterval(timerInterval);
         timerDisplay.textContent = "00:00";
         clearStatsDisplay();
         draw();
+        disableRecordingButtons(true);
       });
       div.appendChild(showBtn);
 
       // Stats button
       const statsBtn = document.createElement("button");
       statsBtn.textContent = "Stats";
+      statsBtn.title = "Show stats for this recording";
       statsBtn.addEventListener("click", () => {
         displayStatsForRecording(index);
       });
@@ -345,6 +342,7 @@
       // Download CSV button
       const csvBtn = document.createElement("button");
       csvBtn.textContent = "Download CSV";
+      csvBtn.title = "Download this recording as CSV";
       csvBtn.addEventListener("click", () => {
         const csv = generateCSV(savedRecordings[index]);
         const blob = new Blob([csv], { type: "text/csv" });
@@ -360,6 +358,7 @@
       // Delete button
       const delBtn = document.createElement("button");
       delBtn.textContent = "Delete";
+      delBtn.title = "Delete this recording";
       delBtn.addEventListener("click", () => {
         if (confirm(`Delete recording "${rec.name}"?`)) {
           savedRecordings.splice(index, 1);
@@ -367,6 +366,7 @@
             selectedRecordingIndex = null;
             clearStatsDisplay();
             draw();
+            disableRecordingButtons(false);
           }
           renderRecordingList();
         }
@@ -421,8 +421,16 @@
     timerDisplay.textContent = formatTimer(elapsed);
   }
 
-  // Event handlers
+  // Enable/disable recording buttons (start, pause, resume, stop, throb)
+  function disableRecordingButtons(disable) {
+    startBtn.disabled = disable;
+    pauseBtn.disabled = disable || !isRecording || isPaused;
+    resumeBtn.disabled = disable || !isRecording || !isPaused;
+    stopBtn.disabled = disable || !isRecording;
+    throbBtn.disabled = disable || !isRecording || isPaused;
+  }
 
+  // === Event handlers ===
   startBtn.addEventListener("click", () => {
     if (isRecording) return;
     pulseWave = [];
@@ -431,13 +439,14 @@
     isRecording = true;
     isPaused = false;
     lastSampleTime = 0;
-    startBtn.disabled = true;
+    selectedRecordingIndex = null;
+    clearStatsDisplay();
+
+    disableRecordingButtons(false);
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
     stopBtn.disabled = false;
     throbBtn.disabled = false;
-    selectedRecordingIndex = null;
-    clearStatsDisplay();
 
     timerInterval = setInterval(updateTimer, 200);
     animateLoop();
@@ -483,17 +492,17 @@
     pulseWave = [];
     throbs = [];
     recordingStartTime = null;
+    selectedRecordingIndex = null;
 
     renderRecordingList();
 
-    startBtn.disabled = false;
+    disableRecordingButtons(false);
     pauseBtn.disabled = true;
     resumeBtn.disabled = true;
     stopBtn.disabled = true;
     throbBtn.disabled = true;
 
     clearStatsDisplay();
-    selectedRecordingIndex = null;
     draw();
   });
 
@@ -517,8 +526,8 @@
     animationId = requestAnimationFrame(animateLoop);
   }
 
-  // Initially disable buttons except start
-  startBtn.disabled = false;
+  // Initial button states
+  disableRecordingButtons(false);
   pauseBtn.disabled = true;
   resumeBtn.disabled = true;
   stopBtn.disabled = true;
