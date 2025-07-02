@@ -43,10 +43,7 @@ let isPaused = false;
 let showWave = true;
 
 let timer = 0;
-let startTime = 0;
-let pauseTime = 0;
 let lastFrameTime = 0;
-let intervalId = null;
 
 let throbs = [];
 let peaks = [];
@@ -58,7 +55,13 @@ let bpmChangeStartTime = 0;
 const bpmChangeDuration = 3000; // 3 seconds smooth bpm changes
 
 let lastWaveVal = null;
-let lastPeakDetected = false;
+
+// Constants for consistent first peak detection:
+const FULL_CYCLE = 2 * Math.PI;
+// Adjust this to your waveform’s first peak phase (where main systolic peak is):
+const FIRST_PEAK_PHASE = 0.3 * FULL_CYCLE;
+
+let lastPeakCycle = -1;
 
 function randomBPM() {
   return 60 + Math.random() * 40;
@@ -66,14 +69,10 @@ function randomBPM() {
 
 // Arterial pulse waveform shape function (one cycle)
 function arterialPulseShape(phase) {
-  // phase from 0 to 2PI
-  // simulate systolic peak then dicrotic notch
-  // simple shape: sharp rise (first half sine), then slower fall + notch
   if (phase < Math.PI * 0.6) {
     return Math.sin((phase / (Math.PI * 0.6)) * Math.PI);
   } else {
-    const fallPhase = (phase - Math.PI * 0.6) / (2 * Math.PI - Math.PI * 0.6);
-    // simple dicrotic notch as small bump at ~70% of cycle
+    const fallPhase = (phase - Math.PI * 0.6) / (FULL_CYCLE - Math.PI * 0.6);
     if (fallPhase < 0.5) {
       return Math.cos(fallPhase * Math.PI) * 0.5;
     } else {
@@ -82,16 +81,14 @@ function arterialPulseShape(phase) {
   }
 }
 
-// Format milliseconds to mm:ss.SSS
+// Format milliseconds to mm:ss.ss (two decimals)
 function formatTime(ms) {
   const m = Math.floor(ms / 60000);
-  const s = Math.floor((ms % 60000) / 1000);
-  const msR = ms % 1000;
-  return `${m}:${s.toString().padStart(2, "0")}.${msR.toString().padStart(3, "0")}`;
+  const s = ((ms % 60000) / 1000).toFixed(2);
+  return `${m}:${s.padStart(5, "0")}`;
 }
 
 function findPriorPeak(time) {
-  // Find the most recent peak before or at given time
   for (let i = peaks.length - 1; i >= 0; i--) {
     if (peaks[i].time <= time) return peaks[i];
   }
@@ -101,130 +98,109 @@ function findPriorPeak(time) {
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  if (!showWave) {
-    ctx.fillStyle = "black";
-    ctx.font = "16px Arial";
-    ctx.fillText(formatTime(timer), 10, 220);
-    return;
-  }
-
-  const startTimeView = Math.max(0, timer - VIEW_MS);
-  const pxPerMs = canvas.width / VIEW_MS;
-
-  // Draw waveform
-  ctx.strokeStyle = "#0080ff";
-  ctx.lineWidth = 2;
+  // Draw baseline
+  ctx.strokeStyle = "#ccc";
   ctx.beginPath();
-
-  for (let x = 0; x < canvas.width; x++) {
-    const t = startTimeView + x / pxPerMs;
-    const peak = findPriorPeak(t);
-    if (!peak) {
-      // no peak yet, baseline middle
-      if (x === 0) ctx.moveTo(x, 115);
-      else ctx.lineTo(x, 115);
-      continue;
-    }
-
-    const interval = MS_PER_MIN / peak.bpm;
-    let phaseLocal = ((t - peak.time) % interval) / interval * 2 * Math.PI;
-    // keep phase positive
-    if (phaseLocal < 0) phaseLocal += 2 * Math.PI;
-
-    const y = 115 - arterialPulseShape(phaseLocal) * 80;
-    if (x === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
+  ctx.moveTo(0, 150);
+  ctx.lineTo(canvas.width, 150);
   ctx.stroke();
 
-  // Draw peaks as vertical red lines
-  ctx.strokeStyle = "red";
-  ctx.lineWidth = 1;
-  peaks.forEach(p => {
-    if (p.time >= startTimeView && p.time <= timer) {
-      const x = (p.time - startTimeView) * pxPerMs;
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, canvas.height);
-      ctx.stroke();
-    }
-  });
+  // Draw waveform and markers if visible
+  if (showWave) {
+    // Draw waveform path for VIEW_MS
+    ctx.strokeStyle = "blue";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
 
-  // Draw throbs as vertical green lines
-  ctx.strokeStyle = "green";
-  ctx.lineWidth = 1;
-  throbs.forEach(t => {
-    if (t >= startTimeView && t <= timer) {
-      const x = (t - startTimeView) * pxPerMs;
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, canvas.height);
-      ctx.stroke();
+    for (let x = 0; x <= canvas.width; x++) {
+      // Calculate phase for each pixel relative to timer-VIEW_MS window
+      const t = timer - VIEW_MS + (x / canvas.width) * VIEW_MS;
+      if (t < 0) continue;
+      const cyclePhase = ((t / 1000) * (currentBPM / 60) * FULL_CYCLE) % FULL_CYCLE;
+      const y = 150 - arterialPulseShape(cyclePhase) * 50;
+      if (x === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
-  });
+    ctx.stroke();
 
-  // Draw timer text
+    // Draw peaks as vertical red lines
+    ctx.strokeStyle = "red";
+    ctx.lineWidth = 1;
+    peaks.forEach(peak => {
+      if (peak.time >= timer - VIEW_MS && peak.time <= timer) {
+        const x = ((peak.time - (timer - VIEW_MS)) / VIEW_MS) * canvas.width;
+        ctx.beginPath();
+        ctx.moveTo(x, 120);
+        ctx.lineTo(x, 180);
+        ctx.stroke();
+      }
+    });
+
+    // Draw throb markers as green vertical lines
+    ctx.strokeStyle = "green";
+    ctx.lineWidth = 1;
+    throbs.forEach(throb => {
+      if (throb >= timer - VIEW_MS && throb <= timer) {
+        const x = ((throb - (timer - VIEW_MS)) / VIEW_MS) * canvas.width;
+        ctx.beginPath();
+        ctx.moveTo(x, 80);
+        ctx.lineTo(x, 110);
+        ctx.stroke();
+      }
+    });
+  }
+
+  // Draw timer below waveform, two decimals
   ctx.fillStyle = "black";
   ctx.font = "16px Arial";
   ctx.fillText(formatTime(timer), 10, 220);
 }
 
-// Rayleigh's R and p-value
-function rayleighTest(phases) {
-  if (phases.length === 0) return { R: 0, p: 1 };
-  const sumCos = phases.reduce((a, p) => a + Math.cos(p), 0);
-  const sumSin = phases.reduce((a, p) => a + Math.sin(p), 0);
-  const R = Math.sqrt(sumCos * sumCos + sumSin * sumSin) / phases.length;
-  const p = Math.exp(-phases.length * R * R);
-  return { R, p };
-}
-
-// Phase Vector Length (PVL)
-function phaseVectorLength(phases) {
-  if (phases.length === 0) return 0;
-  const sumCos = phases.reduce((a, p) => a + Math.cos(p), 0);
-  const sumSin = phases.reduce((a, p) => a + Math.sin(p), 0);
-  const pvl = Math.sqrt(sumCos * sumCos + sumSin * sumSin) / phases.length;
-  return pvl;
-}
-
 function computeStats(name) {
-  if (throbs.length === 0) return "";
+  // Compute phase for throbs and deltas relative to prior peak only
+  let rows = [];
+  throbs.forEach(t => {
+    const priorPeak = findPriorPeak(t);
+    if (!priorPeak) return; // skip if no prior peak
 
-  // Compute delta between each throb and *previous* peak
-  const rows = throbs.map(t => {
-    // find peak strictly before throb time
-    const priorPeakIndex = peaks.findIndex(p => p.time > t) - 1;
-    let priorPeak = null;
-    if (priorPeakIndex >= 0) priorPeak = peaks[priorPeakIndex];
-    if (!priorPeak) priorPeak = peaks[0]; // fallback first peak
-
-    const bpm = priorPeak ? priorPeak.bpm : currentBPM;
     const delta = t - priorPeak.time;
-    const interval = MS_PER_MIN / bpm;
-    let phase = ((delta % interval) / interval) * 2 * Math.PI;
-    if (phase < 0) phase += 2 * Math.PI;
+    // Calculate phase angle (radians) of throb relative to peak interval
+    const peakInterval = MS_PER_MIN / priorPeak.bpm;
+    let phase = (delta / peakInterval) * FULL_CYCLE;
+    while (phase < 0) phase += FULL_CYCLE;
+    while (phase >= FULL_CYCLE) phase -= FULL_CYCLE;
 
-    return { t, priorPeak: priorPeak.time, delta, bpm, phase };
+    rows.push({ t, priorPeak: priorPeak.time, delta, bpm: priorPeak.bpm, phase });
   });
 
-  const phases = rows.map(r => r.phase);
-  const { R, p } = rayleighTest(phases);
-  const pvl = phaseVectorLength(phases);
+  // Rayleigh test of uniformity for phases (simplified)
+  let sumSin = 0, sumCos = 0;
+  rows.forEach(r => {
+    sumSin += Math.sin(r.phase);
+    sumCos += Math.cos(r.phase);
+  });
+  const n = rows.length;
+  const R = n === 0 ? 0 : Math.sqrt(sumSin*sumSin + sumCos*sumCos) / n;
+
+  // Rayleigh p-value approximation
+  let p = 1;
+  if (n > 0) {
+    const z = n * R * R;
+    p = Math.exp(Math.sqrt(1 + 4*n + 4*n*n - 4*n*z) - (1 + 2*n));
+  }
 
   // Mean pulse rate over recorded peaks
   const bpms = peaks.map(p => p.bpm);
-  const meanBPM = bpms.reduce((a,b) => a+b,0) / bpms.length;
+  const meanBPM = bpms.length > 0 ? bpms.reduce((a,b) => a+b,0) / bpms.length : 0;
 
   // Build CSV text
   let csv = `Recording Name:,${name}\n`;
-  csv += `Duration (ms),${timer}\n`;
+  csv += `Duration (ms),${timer.toFixed(2)}\n`;
   csv += `Total throbs,${throbs.length}\n`;
   csv += `Total peaks,${peaks.length}\n`;
   csv += `Mean BPM,${meanBPM.toFixed(2)}\n`;
   csv += `Rayleigh's R,${R.toFixed(4)}\n`;
-  csv += `Rayleigh's p-value,${p.toExponential(4)}\n`;
-  csv += `PVL,${pvl.toFixed(4)}\n\n`;
+  csv += `Rayleigh's p-value,${p.toExponential(4)}\n\n`;
 
   csv += `ThrobTime(ms),PriorPeakTime(ms),Delta(ms),PulseBPM,Phase(rad)\n`;
   rows.forEach(r => {
@@ -291,7 +267,6 @@ function updateBPM(now) {
     currentBPM = targetBPM;
     targetBPM = randomBPM();
   } else {
-    // Smooth linear interpolation
     const fraction = elapsed / bpmChangeDuration;
     currentBPM = currentBPM + fraction * (targetBPM - currentBPM);
   }
@@ -305,44 +280,45 @@ function animate(timestamp) {
     timer += deltaTime;
     updateBPM(timestamp);
 
-    // Update phase
-    // phase += deltaTime * currentBPM / 60 * 2PI
-    phase += (deltaTime / 1000) * (currentBPM / 60) * 2 * Math.PI;
-    if (phase > 2 * Math.PI) phase -= 2 * Math.PI;
+    // Update phase (radians)
+    phase += (deltaTime / 1000) * (currentBPM / 60) * FULL_CYCLE;
+    if (phase >= FULL_CYCLE) {
+      phase -= FULL_CYCLE;
+    }
 
-    // Calculate waveform value at current phase
-    const waveVal = arterialPulseShape(phase);
+    // Determine current cycle number
+    const cycle = Math.floor(phase / FULL_CYCLE);
+    // Detect first peak at consistent phase per cycle
+    // We trigger peak when phase crosses FIRST_PEAK_PHASE from below
+    // Because phase wraps at FULL_CYCLE, handle wrap-around carefully
 
-    // Detect peak: peak is when waveform transitions from increasing to decreasing
-    if (lastWaveVal !== null) {
-      if (lastWaveVal < waveVal) lastPeakDetected = false;
-      if (!lastPeakDetected && lastWaveVal > waveVal) {
-        // local max at last frame
-        const peakTime = timer - deltaTime; // approximate peak time at previous frame
-        peaks.push({ time: peakTime, bpm: currentBPM });
-        lastPeakDetected = true;
+    // To detect crossing of FIRST_PEAK_PHASE between last and current phase:
+    let phasePrev = phase - (deltaTime / 1000) * (currentBPM / 60) * FULL_CYCLE;
+    if (phasePrev < 0) phasePrev += FULL_CYCLE;
+
+    // Only add peak once per cycle
+    if (cycle > lastPeakCycle) {
+      // Check if FIRST_PEAK_PHASE was crossed between last and current phase
+      if (
+        (phasePrev < FIRST_PEAK_PHASE && phase >= FIRST_PEAK_PHASE) ||
+        // Handle wrap-around if phasePrev near end and phase near start
+        (phasePrev > phase && (FIRST_PEAK_PHASE > phasePrev || FIRST_PEAK_PHASE <= phase))
+      ) {
+        peaks.push({ time: timer, bpm: currentBPM });
+        lastPeakCycle = cycle;
       }
     }
-    lastWaveVal = waveVal;
   }
 
-  draw();
   lastFrameTime = timestamp;
-  if (isRecording) {
-    requestAnimationFrame(animate);
-  }
+  draw();
+  requestAnimationFrame(animate);
 }
 
-// Button handlers
 startBtn.onclick = () => {
   if (isRecording) return;
   isRecording = true;
   isPaused = false;
-  startBtn.disabled = true;
-  pauseBtn.disabled = false;
-  stopBtn.disabled = false;
-  markBtn.disabled = false;
-  toggleBtn.disabled = false;
   timer = 0;
   phase = 0;
   currentBPM = randomBPM();
@@ -350,11 +326,16 @@ startBtn.onclick = () => {
   bpmChangeStartTime = performance.now();
   throbs = [];
   peaks = [];
-  lastWaveVal = null;
-  lastPeakDetected = false;
+  lastPeakCycle = -1;
   lastFrameTime = 0;
+
+  startBtn.disabled = true;
+  pauseBtn.disabled = false;
+  stopBtn.disabled = false;
+  markBtn.disabled = false;
+  recNameInput.disabled = true;
+
   draw();
-  requestAnimationFrame(animate);
 };
 
 pauseBtn.onclick = () => {
@@ -366,17 +347,21 @@ pauseBtn.onclick = () => {
 stopBtn.onclick = () => {
   if (!isRecording) return;
   isRecording = false;
+  isPaused = false;
+
   startBtn.disabled = false;
   pauseBtn.disabled = true;
+  pauseBtn.textContent = "Pause";
   stopBtn.disabled = true;
   markBtn.disabled = true;
-  toggleBtn.disabled = true;
-  pauseBtn.textContent = "Pause";
+  recNameInput.disabled = false;
+
   saveRecording();
 };
 
 markBtn.onclick = () => {
-  if (!isRecording || isPaused) return;
+  if (!isRecording) return;
+  // Mark current timer as throb time
   throbs.push(timer);
 };
 
@@ -387,7 +372,7 @@ toggleBtn.onclick = () => {
 };
 
 draw();
-
+requestAnimationFrame(animate);
 </script>
 </body>
 </html>
