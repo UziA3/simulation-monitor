@@ -136,6 +136,23 @@
     return ((diffMs % period) / period) * 2 * Math.PI;
   }
 
+  // Arterial pulse waveform function approximation:
+  // We simulate a sharper systolic peak and slower diastolic decay with a skewed function.
+  // This function takes a phase from 0 to 2π and returns a value from -1 to 1.
+  function arterialPulseWave(phase) {
+    // Use a skewed waveform: fast rise (0 to ~0.3π), slow decay (0.3π to 2π)
+    // Model with a piecewise function:
+    const riseEnd = 0.3 * 2 * Math.PI; // approx 0.6π
+
+    if (phase < riseEnd) {
+      // Rapid rise, modeled as half sine wave stretched
+      return Math.sin((phase / riseEnd) * Math.PI);
+    } else {
+      // Slow decay, modeled as half cosine wave stretched + offset
+      return Math.cos(((phase - riseEnd) / (2 * Math.PI - riseEnd)) * Math.PI) * 0.5;
+    }
+  }
+
   // Drawing function
   function draw() {
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
@@ -155,10 +172,11 @@
     ctx.lineTo(canvasWidth, waveformHeight / 2);
     ctx.stroke();
 
-    // Draw pulse waveform as sinusoid
+    // Draw arterial pulse waveform
     ctx.strokeStyle = "#0080ff";
     ctx.lineWidth = 2;
     ctx.beginPath();
+
     const period = MS_PER_MIN / bpm;
     const windowDuration = Math.min(timer, 10000);
     const startTimeWindow = timer - windowDuration;
@@ -168,7 +186,8 @@
     for (let x = 0; x < canvasWidth; x++) {
       const t = startTimeWindow + x * msPerPixel;
       const phase = ((t % period) / period) * 2 * Math.PI;
-      const y = waveformHeight / 2 + Math.sin(phase) * (waveformHeight / 3);
+      const yValue = arterialPulseWave(phase);
+      const y = waveformHeight / 2 - yValue * (waveformHeight / 3);
       if (x === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -363,7 +382,7 @@
     recordings.forEach((rec, i) => {
       html += `<div class="recording">
         <strong>${rec.name}</strong> (BPM: ${rec.bpm}, Duration: ${formatTime(rec.duration)})<br/>
-        Throbs: ${rec.throbs.length}<br/>
+        Throbs: ${rec.throbs.length}, Peaks: ${rec.pulsePeaks.length}<br/>
         Rayleigh p-value: ${rec.rayleighPValue.toFixed(4)}, R: ${rec.rayleighR.toFixed(4)}<br/>
         PVL: ${rec.pvl.toFixed(4)}<br/>
         <button onclick="downloadCSV(${i})">Export CSV</button>
@@ -377,8 +396,8 @@
     if (!rec) return alert("Recording not found.");
 
     let csvContent = "data:text/csv;charset=utf-8,";
-    csvContent += "Recording Name,BPM,Duration(ms),Throb Count,Rayleigh p-value,Rayleigh R,PVL\n";
-    csvContent += `"${rec.name}",${rec.bpm},${rec.duration},${rec.throbs.length},${rec.rayleighPValue},${rec.rayleighR},${rec.pvl}\n\n`;
+    csvContent += "Recording Name,BPM,Duration(ms),Throb Count,Pulse Peak Count,Mean Pulse Rate (BPM),Rayleigh p-value,Rayleigh R,PVL\n";
+    csvContent += `"${rec.name}",${rec.bpm},${rec.duration},${rec.throbs.length},${rec.pulsePeaks.length},${rec.bpm},${rec.rayleighPValue},${rec.rayleighR},${rec.pvl}\n\n`;
 
     csvContent += "Throb Times (ms)\n";
     rec.throbs.forEach(t => {
