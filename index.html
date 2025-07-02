@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Migraine Throb Synchrony</title>
 <style>
+  /* ... (same styles as before, omitted here for brevity) ... */
   body {
     font-family: Arial, sans-serif;
     margin: 20px;
@@ -119,43 +120,22 @@
   const sampleRate = 250; // Hz (samples per second)
   const sampleInterval = 1000 / sampleRate; // ms per sample
 
-  // ECG waveform model using sum of Gaussians for P, QRS, T
-  // normalized to a single heartbeat cycle of length 1 (normalized time)
   function ecgWaveform(tNorm) {
-    // P wave: small positive bump around 0.1
-    const p = 0.1;
-    const pWidth = 0.07;
-    const pAmp = 0.15;
+    const p = 0.1, pWidth = 0.07, pAmp = 0.15;
+    const q = 0.2, qWidth = 0.01, qAmp = -0.25;
+    const r = 0.22, rWidth = 0.015, rAmp = 1.0;
+    const s = 0.26, sWidth = 0.01, sAmp = -0.35;
+    const t = 0.4, tWidth = 0.1, tAmp = 0.3;
+
     const pWave = pAmp * Math.exp(-((tNorm - p) ** 2) / (2 * pWidth ** 2));
-
-    // Q wave: small negative dip at 0.2
-    const q = 0.2;
-    const qWidth = 0.01;
-    const qAmp = -0.25;
     const qWave = qAmp * Math.exp(-((tNorm - q) ** 2) / (2 * qWidth ** 2));
-
-    // R wave: big positive peak at 0.22
-    const r = 0.22;
-    const rWidth = 0.015;
-    const rAmp = 1.0;
     const rWave = rAmp * Math.exp(-((tNorm - r) ** 2) / (2 * rWidth ** 2));
-
-    // S wave: negative dip at 0.26
-    const s = 0.26;
-    const sWidth = 0.01;
-    const sAmp = -0.35;
     const sWave = sAmp * Math.exp(-((tNorm - s) ** 2) / (2 * sWidth ** 2));
-
-    // T wave: broad positive bump at 0.4
-    const t = 0.4;
-    const tWidth = 0.1;
-    const tAmp = 0.3;
     const tWave = tAmp * Math.exp(-((tNorm - t) ** 2) / (2 * tWidth ** 2));
 
     return pWave + qWave + rWave + sWave + tWave;
   }
 
-  // Variables to track state
   let running = false;
   let paused = false;
   let startTime = 0;
@@ -165,50 +145,34 @@
   let lastTimestamp = 0;
   let animationFrameId = 0;
 
-  // Waveform and peaks data
-  let waveformSamples = []; // {time(ms), value}
-  let rPeaks = []; // {time(ms), value, bpm}
+  let waveformSamples = [];
+  let rPeaks = [];
+  let throbs = [];
 
-  // Throbs data
-  let throbs = []; // timestamp in ms (relative to start)
-
-  // BPM control
   let currentBpm = 75;
   let bpmChangeTime = 0;
-  let nextBpmChangeInterval = randomInterval();
+  let nextBpmChangeInterval = 0;
 
-  // Show waveform toggle
   let showWaveform = true;
 
-  // Helper functions
   function randomInterval() {
-    return 3000 + Math.random() * 4000; // 3 to 7 seconds
+    return 3000 + Math.random() * 4000;
   }
-
   function randomBpm() {
-    return 60 + Math.floor(Math.random() * 41); // 60 to 100 BPM
+    return 60 + Math.floor(Math.random() * 41);
   }
-
-  // Convert BPM to ms per beat
   function bpmToMs(bpm) {
     return 60000 / bpm;
   }
-
-  // Simulate ECG sample at given elapsed time in ms
-  // We simulate periodic ECG based on current BPM and time since last BPM change
   function simulateEcgSample(elapsedMs) {
-    // Calculate which beat interval we are in since last bpm change
     let elapsedSinceBpmChange = elapsedMs - bpmChangeTime;
     let beatInterval = bpmToMs(currentBpm);
-    let beatPos = (elapsedSinceBpmChange % beatInterval) / beatInterval; // normalized [0,1)
-
+    let beatPos = (elapsedSinceBpmChange % beatInterval) / beatInterval;
     return ecgWaveform(beatPos);
   }
 
-  // Detect R peaks by simple threshold and local max around expected peak time
   function detectRPeaks() {
-    // Simple approach: find local max above 0.8 in waveformSamples, spaced at least 0.4s apart
-    const minDistance = 400; // ms minimum distance between peaks (to avoid duplicates)
+    const minDistance = 400;
     let lastPeakTime = rPeaks.length > 0 ? rPeaks[rPeaks.length - 1].time : -Infinity;
 
     for (let i = 1; i < waveformSamples.length - 1; i++) {
@@ -219,101 +183,20 @@
         s.value > waveformSamples[i + 1].value &&
         s.time > lastPeakTime + minDistance
       ) {
-        // Assign bpm for this peak (based on current bpm at this time)
         let bpmAtPeak = currentBpm;
-
-        // Store R peak
         rPeaks.push({ time: s.time, value: s.value, bpm: bpmAtPeak });
-
         lastPeakTime = s.time;
       }
     }
 
-    // Keep R peaks within rolling window + 1 sec buffer (for synchronization)
     rPeaks = rPeaks.filter(rp => rp.time >= elapsed - waveformDuration - 1000);
   }
 
-  // Convert radians to degrees helper
-  function radToDeg(rad) {
-    return (rad * 180) / Math.PI;
-  }
-
-  // Circular statistics helpers for phases in radians
-  function circularMean(angles) {
-    const sumSin = angles.reduce((a, v) => a + Math.sin(v), 0);
-    const sumCos = angles.reduce((a, v) => a + Math.cos(v), 0);
-    return Math.atan2(sumSin / angles.length, sumCos / angles.length);
-  }
-
-  function circularVariance(angles) {
-    const sumSin = angles.reduce((a, v) => a + Math.sin(v), 0);
-    const sumCos = angles.reduce((a, v) => a + Math.cos(v), 0);
-    const R = Math.sqrt((sumCos / angles.length) ** 2 + (sumSin / angles.length) ** 2);
-    return 1 - R;
-  }
-
-  function circularStd(angles) {
-    return Math.sqrt(-2 * Math.log(1 - circularVariance(angles)));
-  }
-
-  // Rayleigh test for non-uniformity of circular data
-  // Returns { R: resultant vector length, p: p-value }
-  function rayleighTest(angles) {
-    const n = angles.length;
-    if (n === 0) return { R: 0, p: 1 };
-
-    const sumSin = angles.reduce((a, v) => a + Math.sin(v), 0);
-    const sumCos = angles.reduce((a, v) => a + Math.cos(v), 0);
-    const R = Math.sqrt(sumCos ** 2 + sumSin ** 2) / n;
-
-    const z = n * R * R;
-    // Approximate p-value for large n
-    const p = Math.exp(-z) * (1 + (2 * z - z * z) / (4 * n) - (24 * z - 132 * z * z + 76 * z * z * z - 9 * z * z * z * z) / (288 * n * n));
-
-    return { R, p };
-  }
-
-  // Calculate phase of throb relative to previous R peak [0, 2pi)
-  function calculatePhase(throbTime) {
-    // Find the immediately preceding R peak (strictly less than throbTime)
-    let prevPeak = null;
-    for (let i = rPeaks.length - 1; i >= 0; i--) {
-      if (rPeaks[i].time < throbTime) {
-        prevPeak = rPeaks[i];
-        break;
-      }
-    }
-    if (!prevPeak) return null;
-
-    // Find the next R peak after prevPeak
-    let nextPeak = null;
-    for (let i = 0; i < rPeaks.length; i++) {
-      if (rPeaks[i].time > prevPeak.time) {
-        nextPeak = rPeaks[i];
-        break;
-      }
-    }
-    if (!nextPeak) return null;
-
-    const interval = nextPeak.time - prevPeak.time;
-    if (interval <= 0) return null;
-
-    const delta = throbTime - prevPeak.time;
-
-    // Phase normalized to 0-2pi
-    return { phase: (delta / interval) * 2 * Math.PI, delta, prevPeak };
-  }
-
-  // Draw waveform and markers on canvas
   function drawWaveform() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    if (!showWaveform) {
-      // Show only timer, no waveform
-      return;
-    }
+    if (!showWaveform) return;
 
-    // Draw baseline
     const midY = canvas.height / 2;
     ctx.strokeStyle = '#ccc';
     ctx.lineWidth = 1;
@@ -322,12 +205,10 @@
     ctx.lineTo(canvas.width, midY);
     ctx.stroke();
 
-    // Draw ECG waveform line
     ctx.strokeStyle = '#0077cc';
     ctx.lineWidth = 2;
     ctx.beginPath();
 
-    // Map time range from elapsed-waveformDuration to elapsed (5 seconds)
     const tStart = elapsed - waveformDuration;
     const tEnd = elapsed;
 
@@ -337,7 +218,7 @@
       if (s.time > tEnd) break;
 
       const x = ((s.time - tStart) / waveformDuration) * canvas.width;
-      const y = midY - s.value * 70; // scale amplitude
+      const y = midY - s.value * 70;
       if (i === 0 || waveformSamples[i - 1].time < tStart) {
         ctx.moveTo(x, y);
       } else {
@@ -346,60 +227,80 @@
     }
     ctx.stroke();
 
-    // Draw R peaks (red vertical lines)
     ctx.strokeStyle = 'red';
     ctx.lineWidth = 2;
     rPeaks.forEach(rp => {
       if (rp.time >= tStart && rp.time <= tEnd) {
         const x = ((rp.time - tStart) / waveformDuration) * canvas.width;
         ctx.beginPath();
-        ctx.moveTo(x, midY - 90);
-        ctx.lineTo(x, midY + 90);
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
         ctx.stroke();
       }
     });
 
-    // Draw throb markers (green vertical lines)
     ctx.strokeStyle = 'green';
     ctx.lineWidth = 2;
-    throbs.forEach(t => {
-      if (t >= tStart && t <= tEnd) {
-        const x = ((t - tStart) / waveformDuration) * canvas.width;
+    throbs.forEach(throb => {
+      if (throb >= tStart && throb <= tEnd) {
+        const x = ((throb - tStart) / waveformDuration) * canvas.width;
         ctx.beginPath();
-        ctx.moveTo(x, 10);
-        ctx.lineTo(x, canvas.height - 10);
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
         ctx.stroke();
       }
     });
   }
 
-  // Update timer display (seconds with 2 decimal places)
-  function updateTimer() {
-    timerEl.textContent = elapsed / 1000.toFixed(2) + 's';
-    // Actually this displays e.g. "NaNs" because order, so fix below
-  }
-  function updateTimer() {
-    timerEl.textContent = elapsed.toFixed(0) === "0" ? "0.00s" : (elapsed / 1000).toFixed(2) + 's';
+  function formatTime(ms) {
+    return (ms / 1000).toFixed(2) + 's';
   }
 
-  // Update BPM every 3-7 seconds randomly
-  function updateBpm(elapsedMs) {
-    if (elapsedMs - bpmChangeTime > nextBpmChangeInterval) {
-      bpmChangeTime = elapsedMs;
+  function updateTimer() {
+    if (!running) return;
+    if (paused) return;
+
+    elapsed = performance.now() - startTime - elapsedPauseTime;
+    timerEl.textContent = formatTime(elapsed);
+  }
+
+  function animationStep(timestamp) {
+    if (!running || paused) {
+      animationFrameId = requestAnimationFrame(animationStep);
+      return;
+    }
+
+    elapsed = timestamp - startTime - elapsedPauseTime;
+
+    if (elapsed - bpmChangeTime > nextBpmChangeInterval) {
+      bpmChangeTime = elapsed;
       currentBpm = randomBpm();
       nextBpmChangeInterval = randomInterval();
     }
+
+    // Generate samples up to current elapsed
+    let lastSampleTime = waveformSamples.length > 0 ? waveformSamples[waveformSamples.length - 1].time : -sampleInterval;
+    while (lastSampleTime + sampleInterval < elapsed) {
+      lastSampleTime += sampleInterval;
+      waveformSamples.push({ time: lastSampleTime, value: simulateEcgSample(lastSampleTime) });
+    }
+
+    detectRPeaks();
+
+    drawWaveform();
+    updateTimer();
+
+    animationFrameId = requestAnimationFrame(animationStep);
   }
 
-  // Start recording
   function startRecording() {
+    if (running) return;
+
     running = true;
     paused = false;
+
     startTime = performance.now();
     elapsedPauseTime = 0;
-    pauseStartTime = 0;
-    elapsed = 0;
-    lastTimestamp = 0;
     waveformSamples = [];
     rPeaks = [];
     throbs = [];
@@ -407,16 +308,18 @@
     bpmChangeTime = 0;
     nextBpmChangeInterval = randomInterval();
 
+    // Seed initial sample at time 0 to allow waveform to draw immediately
+    waveformSamples.push({ time: 0, value: simulateEcgSample(0) });
+
     startBtn.disabled = true;
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
     stopBtn.disabled = false;
     markThrobBtn.disabled = false;
 
-    animationFrameId = requestAnimationFrame(animate);
+    animationFrameId = requestAnimationFrame(animationStep);
   }
 
-  // Pause recording
   function pauseRecording() {
     if (!running || paused) return;
     paused = true;
@@ -424,10 +327,8 @@
 
     pauseBtn.disabled = true;
     resumeBtn.disabled = false;
-    markThrobBtn.disabled = true;
   }
 
-  // Resume recording
   function resumeRecording() {
     if (!running || !paused) return;
     paused = false;
@@ -435,13 +336,11 @@
 
     pauseBtn.disabled = false;
     resumeBtn.disabled = true;
-    markThrobBtn.disabled = false;
-
-    animationFrameId = requestAnimationFrame(animate);
   }
 
-  // Stop recording and save
   function stopRecording() {
+    if (!running) return;
+
     running = false;
     paused = false;
 
@@ -451,78 +350,32 @@
     stopBtn.disabled = true;
     markThrobBtn.disabled = true;
 
-    if (animationFrameId) {
-      cancelAnimationFrame(animationFrameId);
-      animationFrameId = 0;
-    }
+    cancelAnimationFrame(animationFrameId);
 
     saveRecording();
   }
 
-  // Mark a throb timestamp
   function markThrob() {
     if (!running || paused) return;
-    const now = elapsed;
-    throbs.push(now);
-    drawWaveform();
+    throbs.push(elapsed);
   }
 
-  // Animation loop
-  function animate(timestamp) {
-    if (!running) return;
-
-    if (lastTimestamp === 0) lastTimestamp = timestamp;
-    const dt = timestamp - lastTimestamp;
-    lastTimestamp = timestamp;
-
-    if (!paused) {
-      elapsed = performance.now() - startTime - elapsedPauseTime;
-
-      updateBpm(elapsed);
-
-      // Add new samples based on elapsed time
-      let lastSampleTime = waveformSamples.length > 0 ? waveformSamples[waveformSamples.length - 1].time : 0;
-      while (lastSampleTime + sampleInterval < elapsed) {
-        lastSampleTime += sampleInterval;
-        const val = simulateEcgSample(lastSampleTime);
-        waveformSamples.push({ time: lastSampleTime, value: val });
-      }
-
-      // Keep samples within rolling window
-      waveformSamples = waveformSamples.filter(s => s.time >= elapsed - waveformDuration);
-
-      detectRPeaks();
-
-      drawWaveform();
-
-      updateTimer();
-    }
-
-    animationFrameId = requestAnimationFrame(animate);
-  }
-
-  // Save recording to CSV and add UI entry
   function saveRecording() {
     const recName = prompt('Enter recording name:', `Recording_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}`);
     if (!recName) return;
 
-    // Compose CSV content
-    // Columns: time(ms), waveform value, rPeak(1/0), throb(1/0)
-    const tStart = elapsed - waveformDuration;
-    const recSamples = waveformSamples.filter(s => s.time >= tStart);
+    // Compose CSV content (simplified example)
     let csv = 'time_ms,value,rPeak,throb\n';
 
-    recSamples.forEach(s => {
+    waveformSamples.forEach(s => {
       const isR = rPeaks.some(rp => Math.abs(rp.time - s.time) < sampleInterval / 2) ? 1 : 0;
       const isThrob = throbs.some(t => Math.abs(t - s.time) < sampleInterval / 2) ? 1 : 0;
       csv += `${s.time.toFixed(2)},${s.value.toFixed(4)},${isR},${isThrob}\n`;
     });
 
-    // Create Blob and URL
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
 
-    // Add to recordings list UI
     const div = document.createElement('div');
     div.className = 'recording-item';
 
@@ -543,7 +396,6 @@
     alert('Recording saved!');
   }
 
-  // Event listeners
   startBtn.addEventListener('click', startRecording);
   pauseBtn.addEventListener('click', pauseRecording);
   resumeBtn.addEventListener('click', resumeRecording);
